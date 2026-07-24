@@ -100,6 +100,7 @@ class ProbeResult:
     heal: Heal | None = None
     feature_status: str | None = None
     user_message: str | None = None
+    structured_detail: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.verdict not in VERDICTS:
@@ -112,6 +113,11 @@ class ProbeResult:
             "unknown",
         }:
             raise ValueError(f"Invalid feature status: {self.feature_status}")
+        if self.structured_detail is not None and not isinstance(
+            self.structured_detail,
+            dict,
+        ):
+            raise TypeError("ProbeResult structured_detail must be a dict or null")
 
 
 @dataclass(frozen=True)
@@ -600,6 +606,11 @@ QUICK_CHECKS = (
     CheckDefinition("vault.configs", "Vault configuration", "_probe_vault_configs"),
     CheckDefinition("vault.git", "Vault history", "_probe_vault_git"),
     CheckDefinition("brain.git", "Dex brain history", "_probe_brain_git"),
+    CheckDefinition(
+        "topology.pre-split-archive",
+        "Pre-split undo archive",
+        "_probe_pre_split_archive",
+    ),
     CheckDefinition("vault.auto-commit", "Vault auto-commit", "_probe_vault_auto_commit"),
     CheckDefinition(
         "topology.migration-pending",
@@ -632,6 +643,11 @@ QUICK_CHECKS = (
 )
 
 DEEP_CHECKS = (
+    CheckDefinition(
+        "customizations.assessment",
+        "customization_assessment",
+        "_probe_customization_assessment",
+    ),
     CheckDefinition("granola.query_path", "Granola meeting sync", "_probe_granola_query_path"),
     CheckDefinition("calendar.access", "Calendar access", "_probe_calendar_access"),
     CheckDefinition("qmd.live", "Semantic search", "_probe_qmd_live"),
@@ -643,6 +659,14 @@ DEEP_CHECKS = (
 
 def _one_line(value: object) -> str:
     return " ".join(str(value).split()) or value.__class__.__name__
+
+
+def _format_archive_size(size_bytes: int) -> str:
+    """Return archive sizes in a compact, human-readable unit."""
+    for unit, divisor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+        if size_bytes >= divisor:
+            return f"{size_bytes / divisor:.1f} {unit}"
+    return f"{size_bytes / 1024:.1f} KB"
 
 
 def _sentence(value: object) -> str:
@@ -994,6 +1018,13 @@ def collect(
         "summary": _summary(checks),
         "adoption": adoption.to_dict(),
     }
+    if deep:
+        assessment_result = results.get("customizations.assessment")
+        if (
+            assessment_result is not None
+            and assessment_result.structured_detail is not None
+        ):
+            report["customization_assessment"] = assessment_result.structured_detail
 
     try:
         _write_last_run(report, context)
@@ -1493,6 +1524,69 @@ def _probe_adoption_plan(context: DoctorContext) -> ProbeResult:
         )
     except Exception as error:
         return ProbeResult("UNKNOWN", f"The adoption plan could not be built: {_one_line(error)}")
+
+
+CUSTOMIZATION_RECORD_PERSISTENCE_CAP = 25
+
+
+def _customization_persistence_detail(
+    authority: dict[str, object],
+) -> dict[str, object]:
+    """Bound the record list that Doctor writes into its last-run receipt."""
+    detail = dict(authority)
+    records = authority.get("records")
+    if not isinstance(records, list):
+        detail["records_truncated"] = False
+        return detail
+    total = len(records)
+    detail["records"] = records[:CUSTOMIZATION_RECORD_PERSISTENCE_CAP]
+    detail["records_total"] = total
+    detail["records_truncated"] = total > CUSTOMIZATION_RECORD_PERSISTENCE_CAP
+    return detail
+
+
+def _probe_customization_assessment(context: DoctorContext) -> ProbeResult:
+    """Build the read-only customization assessment entirely in memory."""
+    from core.customization_migration.report import assessment_report
+    from core.customization_migration.service import assess
+
+    assessment = assess(context.vault_root)
+    authority = _customization_persistence_detail(
+        assessment_report(assessment)
+    )
+    catalog_path = _release_catalog_path(context)
+    if os.path.lexists(catalog_path):
+        try:
+            load_catalog(catalog_path, release_root=context.vault_root)
+        except (CatalogError, UnicodeError) as error:
+            return ProbeResult(
+                "BROKEN",
+                f"The installed release catalog is invalid: {_one_line(error)}",
+                structured_detail=authority,
+            )
+    if assessment.baseline_identity_state != "VERIFIED":
+        return ProbeResult(
+            "UNKNOWN",
+            "I couldn't verify which Dex version is installed, so I can't tell you "
+            "what you've changed.",
+            structured_detail=authority,
+        )
+    if assessment.completeness == "UNKNOWN":
+        return ProbeResult(
+            "UNKNOWN",
+            "I couldn't prove a complete customization inventory "
+            f"({', '.join(assessment.incomplete_reasons)}).",
+            structured_detail=authority,
+        )
+    count = assessment.identity.customization_count
+    noun = "customization" if count == 1 else "customizations"
+    blocked_count = authority["blocked_count"]
+    blocked_suffix = f", {blocked_count} blocked" if blocked_count else ""
+    return ProbeResult(
+        "OK",
+        f"Customization assessment completed: {count} {noun}{blocked_suffix}",
+        structured_detail=authority,
+    )
 
 
 def _mcp_config_path(context: DoctorContext) -> Path:
@@ -2412,55 +2506,11 @@ def _regular_json(path: Path) -> dict[str, Any] | None:
 
 
 def _topology_state(context: DoctorContext) -> str:
-    vault_git = context.vault_root / ".git"
-    brain_git = context.vault_root / ".dex/brain.git"
-    topology = _regular_json(context.vault_root / "System/.dex/topology.json")
-    vault_marker = _regular_json(vault_git / "dex-vault-v2")
-    brain_marker = _regular_json(brain_git / "dex-brain-v2")
-    if topology and topology.get("topology") == "brain-vault-split":
-        environment = topology.get("environment")
-        wired_vault = environment.get("DEX_VAULT") if isinstance(environment, dict) else None
-        try:
-            vault_wiring_matches = (
-                isinstance(wired_vault, str)
-                and Path(wired_vault).resolve() == context.vault_root.resolve()
-            )
-        except OSError:
-            vault_wiring_matches = False
-        if (
-            topology.get("vaultGitDir") == ".git"
-            and topology.get("brainGitDir") == ".dex/brain.git"
-            and vault_wiring_matches
-            and vault_git.is_dir()
-            and not vault_git.is_symlink()
-            and brain_git.is_dir()
-            and not brain_git.is_symlink()
-            and vault_marker
-            and vault_marker.get("role") == "vault"
-            and brain_marker
-            and brain_marker.get("role") == "brain"
-        ):
-            return "post-split"
-        return "invalid-split"
-    migration_state = _regular_json(
-        context.vault_root / "System/.dex/migration-v2-state.json"
-    )
-    if migration_state and migration_state.get("status") != "complete":
-        return "migration-in-progress"
-    if any(
-        candidate.exists()
-        for candidate in (
-            context.vault_root / ".dex/pre-split-archive.git",
-            context.vault_root / ".dex/vault-staging.git",
-        )
-    ):
-        return "migration-in-progress"
-    migrator = context.vault_root / "core/migrations/v1-to-v2-brain-vault-split.cjs"
-    if vault_git.exists() and migrator.is_file() and not migrator.is_symlink():
-        return "migration-pending"
-    if not vault_git.exists():
-        return "zip-or-manual"
-    return "combined"
+    lifecycle_state = lifecycle_engine.topology_state(context.vault_root)
+    return {
+        "combined": "migration-pending",
+        "invalid-combined": "combined",
+    }.get(lifecycle_state, lifecycle_state)
 
 
 def _probe_vault_git(context: DoctorContext) -> ProbeResult:
@@ -2577,6 +2627,31 @@ def _probe_brain_git(context: DoctorContext) -> ProbeResult:
     )
 
 
+def _probe_pre_split_archive(context: DoctorContext) -> ProbeResult:
+    """Describe the retained pre-split history without treating it as a fault."""
+    archive = context.vault_root / ".dex/pre-split-archive.git"
+    if not archive.exists():
+        return ProbeResult("OFF", "No pre-split undo archive is present")
+    if archive.is_symlink() or not archive.is_dir():
+        return ProbeResult("BROKEN", "The pre-split undo archive is not a safe directory")
+    try:
+        size_bytes = sum(
+            path.stat().st_size
+            for path in archive.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        )
+        age_days = max(0, int((context.now.timestamp() - archive.stat().st_mtime) // 86_400))
+    except OSError as error:
+        return ProbeResult("UNKNOWN", f"Could not inspect the pre-split undo archive: {_one_line(str(error))}")
+    size_text = _format_archive_size(size_bytes)
+    return ProbeResult(
+        "OK",
+        f"The pre-split undo archive is present ({age_days} days old, {size_text}). "
+        "It is the one-command undo for the brain/vault conversion. Keep it for one full "
+        "release cycle after conversion, then Dex can offer its receipted removal.",
+    )
+
+
 def _probe_vault_auto_commit(context: DoctorContext) -> ProbeResult:
     profile_path = context.vault_root / "System/user-profile.yaml"
     if profile_path.is_symlink():
@@ -2618,17 +2693,22 @@ def _probe_migration_pending(context: DoctorContext) -> ProbeResult:
     if topology == "migration-pending":
         return ProbeResult(
             "BROKEN",
-            "Dex needs its one-time brain/vault upgrade — run /dex-update; notes stay in place",
+            "Dex needs its one-time brain/vault upgrade. Run /dex-update to review "
+            "the preview and give explicit approval; notes stay in place until then",
         )
     if topology == "migration-in-progress":
         return ProbeResult(
             "BROKEN",
-            "The one-time upgrade is incomplete — run /dex-update so recovery can resume",
+            "The one-time upgrade is incomplete. Run core/migrations/v1-to-v2-brain-vault-split.cjs "
+            "--resume to continue, or --restore to return to the pre-split layout. Do not reinstall, "
+            "restore backups, or run raw Git commands while recovery is pending.",
         )
     if topology == "invalid-split":
         return ProbeResult(
             "BROKEN",
-            "The split topology markers or DEX_VAULT wiring disagree — use updater or migrator recovery, never raw Git",
+            "The split topology markers or DEX_VAULT wiring disagree. Run "
+            "core/migrations/v1-to-v2-brain-vault-split.cjs --resume to continue, or --restore "
+            "to return to the pre-split layout. Do not reinstall, restore backups, or run raw Git commands.",
         )
     if topology == "zip-or-manual":
         return ProbeResult(

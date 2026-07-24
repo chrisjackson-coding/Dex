@@ -15,11 +15,15 @@ const connectorModel = require('./lib/connector-model.js');
 const { createConnectorLedger } = require('./lib/connector-ledger.js');
 const { createConnectorVerify, CATEGORY } = require('./lib/connector-verify.js');
 const { createSingleFlight, refreshOAuthToken } = require('./lib/oauth-refresh.js');
+const { assertPinnedOrigin, isVetted } = require('./pinned-providers.cjs');
 
 const EXPIRY_SKEW_MS = 5 * 60 * 1000; // treat tokens expiring within 5 min as "expiring"
 const runSingleFlight = createSingleFlight();
 const ledger = createConnectorLedger({
   stateDir: () => path.join(store.credentialsDir(), 'ledger'),
+  attest: (connId, row) => store.attestLedgerRow(connId, row),
+  verify: (connId, row) => store.verifyLedgerRow(connId, row),
+  isCurrent: (connId, row) => store.ledgerRowMatchesCurrentCredential(connId, row),
 });
 
 function connectionLedger() {
@@ -290,6 +294,9 @@ async function refreshToken(service, { force = false } = {}) {
         },
       });
       try {
+        if (isVetted(provider)) {
+          assertPinnedOrigin(provider, 'refresh', providerConfig.refreshUrl || providerConfig.tokenUrl);
+        }
         const result = await refreshOAuthToken({
           tokenUrl: providerConfig.refreshUrl || providerConfig.tokenUrl,
           refreshToken: current.refresh_token || token.refresh_token,
@@ -308,7 +315,10 @@ async function refreshToken(service, { force = false } = {}) {
         return fresh.access_token;
       } catch (err) {
         const needsReauth = err && err.permanent === true;
-        const code = String((err && err.message) || 'refresh_failed').slice(0, 200);
+        const code =
+          err && typeof err.code === 'string' && /^[A-Za-z][A-Za-z0-9._-]{0,79}$/.test(err.code)
+            ? err.code
+            : 'refresh_failed';
         recordConnectionEvent(connId, 'refresh', {
           ok: false,
           error: { category: needsReauth ? 'auth_permanent' : 'transient', code, message: code },
@@ -334,12 +344,19 @@ async function probeConnection(service, options = {}) {
   const connId = store.resolveConnId(service);
   const reg = store.readRegistry()[connId] || {};
   const provider = reg.provider || store.parseConnectionId(connId).provider;
+  if (!isVetted(provider) && options.allowUnvetted !== true) {
+    throw new Error(`${provider} is not security-reviewed; verification was skipped.`);
+  }
   const token = store.loadToken(connId);
   if (!token) throw new Error(`${connId} is not connected.`);
   const credential = isKeyBased(reg, token)
     ? token.apiKey || token.password || null
     : await ensureFreshToken(connId);
   const verifier = createConnectorVerify(options);
+  if (isVetted(provider) && verifier.PROBES[provider]) {
+    const request = verifier.PROBES[provider].buildRequest(credential, {});
+    assertPinnedOrigin(provider, 'verification', request.url);
+  }
   const result = await verifier.verify(connId, { provider, token: credential });
   recordConnectionEvent(connId, 'probe', verifier.toLedgerRow(connId, result));
   if (result.error && result.error.category === CATEGORY.AUTH_PERMANENT) {

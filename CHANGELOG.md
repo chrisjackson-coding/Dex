@@ -7,7 +7,7 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
-## [1.75.0] — 🔐 A second look at how your app sign-ins are stored (2026-07-24)
+## [1.75.2] — 🔐 A second look at how your app sign-ins are stored (2026-07-24)
 
 Before the connections doorway opens, I wanted the way Dex stores your sign-ins checked properly rather than taken on trust. So it got reviewed twice, independently — once by me and once by a separate AI model that wasn't shown my findings, each trying to find ways in. The good news up front: the actual sealing of your credentials held up under both reviews. What the reviews found were softer edges around it, and this release tidies all of them. Nothing here was ever exploited, and the feature isn't open to anyone yet — this is the tidying you do *before* opening the door.
 
@@ -21,6 +21,21 @@ Before the connections doorway opens, I wanted the way Dex stores your sign-ins 
 * **Sturdier under odd setups.** If your credentials folder or key arrived from a backup with loose permissions, Dex now tightens them before use rather than trusting them, and refuses outright if something looks tampered with. And account names that could have collided into the same file — quietly breaking one of two connections — are now rejected up front.
 
 Still no change to day-to-day use: this is the last piece of groundwork before connecting your tools becomes something you can actually do.
+
+## [1.75.1] — 🔍 Dex Doctor now knows exactly what you've customised (2026-07-24)
+
+*(This is the v1.75.0 feature release, re-cut: v1.75.0's packaging step was incomplete, so its update bundle never published. Nothing else changed.)*
+
+If you've made Dex your own — edited a built-in skill, added your own scripts or instructions, wired up your own connections — updating has always carried a quiet worry: *what will this touch?* Until now, Dex could promise not to overwrite your files, but it couldn't tell you what you'd actually changed. Now it can.
+
+**What this does for you:**
+
+* **A full inventory of your customisations, on demand.** Run `/dex-doctor` and its deep check now works out — file by file, against the exact version you installed — what's standard Dex, what you changed, what you added, and what depends on what (a skill you edited that calls a script you wrote, which reads from a folder you renamed).
+* **It changes nothing.** This is a read-only report. Doctor never edits, moves, or "fixes" your customisations — it shows you the map so you can update with your eyes open.
+* **It refuses to guess.** If Dex can't verify exactly which version you're on, it says "I can't tell you what you've changed" instead of showing a falsely reassuring zero. I'd rather Dex admit uncertainty than hand you a wrong all-clear right before an update.
+* **Your secrets stay out of it.** Credential files and keys are excluded before they're ever read — nothing sensitive appears in the report, and I attacked this with independent adversarial reviews (which caught and closed a real leak path before release) to make sure.
+
+This is step one of the guided upgrade for customised setups I posted about — the piece that rebuilds your tailoring on new versions is coming behind its own safety gates.
 
 ## [1.74.0] — 🔌 Groundwork: connecting your other tools, tested against the real world (2026-07-24)
 

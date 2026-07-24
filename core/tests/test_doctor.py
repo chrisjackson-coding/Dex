@@ -25,6 +25,7 @@ QUICK_IDS = [
     "vault.configs",
     "vault.git",
     "brain.git",
+    "topology.pre-split-archive",
     "vault.auto-commit",
     "topology.migration-pending",
     "release.catalog",
@@ -45,6 +46,7 @@ QUICK_IDS = [
 ]
 
 DEEP_IDS = [
+    "customizations.assessment",
     "granola.query_path",
     "calendar.access",
     "qmd.live",
@@ -93,7 +95,20 @@ def _stub_probes(monkeypatch, *, overrides=None, exclude=()):
     for definition in (*doctor.QUICK_CHECKS, *doctor.DEEP_CHECKS):
         if definition.id == "doctor.self" or definition.id in excluded:
             continue
-        probe_result = overrides.get(definition.id, doctor.ProbeResult("OK", "Stub probe completed."))
+        default = doctor.ProbeResult(
+            "OK",
+            "Stub probe completed.",
+            structured_detail=(
+                {
+                    "schema_version": 1,
+                    "completeness": "OK",
+                    "verdict": "OK",
+                }
+                if definition.id == "customizations.assessment"
+                else None
+            ),
+        )
+        probe_result = overrides.get(definition.id, default)
         monkeypatch.setattr(
             doctor,
             definition.probe,
@@ -607,6 +622,20 @@ def test_topology_probe_distinguishes_combined_split_and_invalid(context):
     assert doctor._topology_state(context) == "combined"
     assert doctor._probe_migration_pending(context).verdict == "OFF"
 
+    migrator = (
+        context.vault_root
+        / "core/migrations/v1-to-v2-brain-vault-split.cjs"
+    )
+    migrator.parent.mkdir(parents=True)
+    migrator.write_text("'use strict';\n", encoding="utf-8")
+    assert doctor._topology_state(context) == "migration-pending"
+    pending = doctor._probe_migration_pending(context)
+    assert pending.verdict == "BROKEN"
+    assert "/dex-update" in pending.detail
+    assert "preview" in pending.detail
+    assert "approval" in pending.detail
+
+    migrator.unlink()
     shutil.rmtree(context.vault_root / ".git")
     _write_split_topology(context)
     assert doctor._topology_state(context) == "post-split"
@@ -615,6 +644,70 @@ def test_topology_probe_distinguishes_combined_split_and_invalid(context):
     (context.vault_root / ".dex/brain.git/dex-brain-v2").unlink()
     assert doctor._topology_state(context) == "invalid-split"
     assert doctor._probe_migration_pending(context).verdict == "BROKEN"
+
+
+def test_pre_split_archive_probe_reports_age_size_and_retention(context):
+    archive = context.vault_root / ".dex/pre-split-archive.git"
+    archive.mkdir(parents=True)
+    (archive / "HEAD").write_bytes(b"ref: refs/heads/main\n")
+    timestamp = (NOW - timedelta(days=9)).timestamp()
+    os.utime(archive, (timestamp, timestamp))
+
+    result = doctor._probe_pre_split_archive(context)
+
+    assert result.verdict == "OK"
+    assert "9 days old" in result.detail
+    assert "0.0 KB" in result.detail
+    assert "one-command undo" in result.detail
+    assert "one full release cycle after conversion" in result.detail
+
+
+def test_migration_recovery_verdicts_name_exact_commands_and_manual_repair_warning(context):
+    state = context.vault_root / "System/.dex/migration-v2-state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text('{"status":"needs-resume"}\n')
+
+    in_progress = doctor._probe_migration_pending(context)
+
+    assert "--resume" in in_progress.detail
+    assert "--restore" in in_progress.detail
+    assert "Do not reinstall, restore backups, or run raw Git commands" in in_progress.detail
+
+    state.unlink()
+    _write_split_topology(context)
+    (context.vault_root / ".dex/brain.git/dex-brain-v2").unlink()
+
+    invalid = doctor._probe_migration_pending(context)
+
+    assert "--resume" in invalid.detail
+    assert "--restore" in invalid.detail
+    assert "Do not reinstall, restore backups, or run raw Git commands" in invalid.detail
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_state", "doctor_state"),
+    [
+        ("combined", "migration-pending"),
+        ("invalid-combined", "combined"),
+        ("post-split", "post-split"),
+        ("invalid-split", "invalid-split"),
+        ("migration-in-progress", "migration-in-progress"),
+        ("zip-or-manual", "zip-or-manual"),
+    ],
+)
+def test_topology_state_delegates_to_lifecycle_classifier(
+    context,
+    monkeypatch,
+    lifecycle_state,
+    doctor_state,
+):
+    monkeypatch.setattr(
+        doctor.lifecycle_engine,
+        "topology_state",
+        lambda vault_root: lifecycle_state,
+    )
+
+    assert doctor._topology_state(context) == doctor_state
 
 
 def test_split_brain_install_probe_checks_ref_markers_origin_and_integrity(context):
@@ -746,7 +839,7 @@ def test_json_contract_shape_and_last_run_file(monkeypatch, context, deep, expec
 
     report = doctor.collect(deep=deep, context=context)
 
-    assert set(report) == {
+    expected_keys = {
         "generated_at",
         "mode",
         "instruments",
@@ -754,6 +847,9 @@ def test_json_contract_shape_and_last_run_file(monkeypatch, context, deep, expec
         "summary",
         "adoption",
     }
+    if deep:
+        expected_keys.add("customization_assessment")
+    assert set(report) == expected_keys
     assert report["generated_at"] == NOW.isoformat()
     assert report["mode"] == ("deep" if deep else "quick")
     assert report["instruments"] == {

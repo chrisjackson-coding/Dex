@@ -63,10 +63,11 @@ function isRefreshDue(record, bufferMs = DEFAULT_REFRESH_BUFFER_MS) {
 }
 
 class RefreshError extends Error {
-	constructor(message, { permanent = false, cause, retryAfterMs } = {}) {
+	constructor(message, { permanent = false, cause, retryAfterMs, code = "refresh_failed" } = {}) {
 		super(message);
 		this.name = "RefreshError";
 		this.permanent = permanent;
+		this.code = code;
 		// A rate-limit hint (ms) carried on a transient 429 so the retry loop
 		// can back off appropriately. Null when there is no usable hint.
 		this.retryAfterMs = retryAfterMs ?? null;
@@ -111,10 +112,13 @@ async function refreshOAuthToken({
 	secrets = [],
 } = {}) {
 	if (typeof fetchImpl !== "function") {
-		throw new RefreshError("No fetch implementation available for token refresh", { permanent: false });
+		throw new RefreshError("No fetch implementation available for token refresh", {
+			permanent: false,
+			code: "refresh_unavailable",
+		});
 	}
 	if (!refreshToken) {
-		throw new RefreshError("No refresh token on file", { permanent: false });
+		throw new RefreshError("No refresh token on file", { permanent: false, code: "no_refresh_token" });
 	}
 
 	const body = new URLSearchParams({
@@ -146,8 +150,8 @@ async function refreshOAuthToken({
 		} catch (error) {
 			const timedOut = controller.signal.aborted || error?.name === "AbortError";
 			throw new RefreshError(
-				safeMessage(timedOut ? `Token refresh timed out after ${timeoutMs}ms` : `Token refresh request failed: ${error?.message || "unknown"}`),
-				{ permanent: false, cause: error },
+				safeMessage(timedOut ? `Token refresh timed out after ${timeoutMs}ms` : "Token refresh request failed"),
+				{ permanent: false, cause: error, code: timedOut ? "refresh_timeout" : "refresh_request_failed" },
 			);
 		} finally {
 			clearTimeout(timer);
@@ -157,7 +161,11 @@ async function refreshOAuthToken({
 		try {
 			data = await response.json();
 		} catch (error) {
-			throw new RefreshError("Token refresh returned a non-JSON response", { permanent: false, cause: error });
+			throw new RefreshError("Token refresh returned a non-JSON response", {
+				permanent: false,
+				cause: error,
+				code: "refresh_response_invalid",
+			});
 		}
 
 		// Slack signals failure via `ok: false` (HTTP 200, error in the body);
@@ -170,13 +178,19 @@ async function refreshOAuthToken({
 			// (from the body `retry_after` or the response headers). Other error
 			// codes keep the existing permanent/transient classification.
 			if (rateLimit.is429(data)) {
-				throw new RefreshError(safeMessage(data?.error_description || data?.error || "Token refresh was rate limited"), {
+				throw new RefreshError(safeMessage("Token refresh was rate limited"), {
 					permanent: false,
+					code: "rate_limited",
 					retryAfterMs: rateLimit.retryAfterMs(data) ?? rateLimit.retryAfterMs(response),
 				});
 			}
-			throw new RefreshError(safeMessage(data?.error_description || data?.error || "Token refresh was rejected"), {
+			const providerCode =
+				typeof data?.error === "string" && /^[A-Za-z][A-Za-z0-9._-]{0,79}$/.test(data.error.trim())
+					? data.error.trim()
+					: "refresh_rejected";
+			throw new RefreshError(safeMessage(`Token refresh was rejected (${providerCode})`), {
 				permanent: isPermanentError(data),
+				code: providerCode,
 			});
 		}
 		if (response && typeof response.ok === "boolean" && !response.ok) {
@@ -187,6 +201,7 @@ async function refreshOAuthToken({
 			const isRateLimited = status === 429;
 			throw new RefreshError(`Token refresh failed (HTTP ${status})`, {
 				permanent: status >= 400 && status < 500 && !isRateLimited,
+				code: isRateLimited ? "rate_limited" : `http_${status || "error"}`,
 				retryAfterMs: isRateLimited ? rateLimit.retryAfterMs(response) ?? rateLimit.retryAfterMs(data) : null,
 			});
 		}
@@ -196,7 +211,10 @@ async function refreshOAuthToken({
 		const source = data?.authed_user && typeof data.authed_user === "object" ? data.authed_user : data;
 		const parsed = parseTokenResponse(source);
 		if (!parsed || !parsed.accessToken) {
-			throw new RefreshError("Token refresh response did not include a usable access token", { permanent: false });
+			throw new RefreshError("Token refresh response did not include a usable access token", {
+				permanent: false,
+				code: "missing_access_token",
+			});
 		}
 
 		const expiresIn = Number(parsed.expiresIn);

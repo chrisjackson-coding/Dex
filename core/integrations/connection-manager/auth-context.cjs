@@ -31,7 +31,17 @@ function apiKeyContext(token, service) {
     const baseUrl = (descriptor.proxyBaseUrl || '').replace(/\$\{apiKey\}/g, token.apiKey || '');
     // apiKey rides along so CLIs can REDACT it from anything they print (the
     // envelope itself is secret-bearing by contract: headers/baseUrl carry it).
-    return { kind: 'api_key', baseUrl: baseUrl || null, headers, query, ...(token.apiKey ? { apiKey: token.apiKey } : {}) };
+    const context = {
+      kind: 'api_key',
+      baseUrl: baseUrl || null,
+      headers,
+      query,
+      ...(token.apiKey ? { apiKey: token.apiKey } : {}),
+    };
+    // Internal routing metadata for dex-call's origin policy. Keep it
+    // non-enumerable so the published get-token response contract stays v1.
+    Object.defineProperty(context, 'provider', { value: provider });
+    return context;
   } catch {
     // Not in catalog (or BASIC-only) — hand back the raw secret with no scheme; a caller can
     // still hit a full URL and supply its own header.
@@ -69,6 +79,12 @@ async function resolveAuthContext(service) {
     throw e;
   }
   if (token.kind === 'api_key') {
+    const reg = store.getConnection(service);
+    if (reg && reg.status === 'needs_reauth') {
+      const e = new Error(`${service} needs re-authentication. Run: node connect.cjs set-key ${service}`);
+      e.exitCode = 3;
+      throw e;
+    }
     store.touchUsed(service);
     return apiKeyContext(token, service);
   }
@@ -93,7 +109,11 @@ async function resolveAuthContext(service) {
   } catch {
     /* no catalog base — caller must pass a full URL */
   }
-  return { kind: 'oauth', baseUrl, headers: { Authorization: `Bearer ${accessToken}` }, query: {} };
+  const reg = store.getConnection(service) || {};
+  const provider = reg.provider || store.parseConnectionId(service).provider;
+  const context = { kind: 'oauth', baseUrl, headers: { Authorization: `Bearer ${accessToken}` }, query: {} };
+  Object.defineProperty(context, 'provider', { value: provider });
+  return context;
 }
 
 /**
@@ -119,10 +139,34 @@ function secretsOf(ctx) {
   return [...out].sort((a, b) => b.length - a.length);
 }
 
-/** Replace every occurrence of each secret in `text` with '***'. */
+function encodedSecretForms(secret) {
+  const forms = new Set([secret, Buffer.from(secret, 'utf8').toString('base64')]);
+  try {
+    const percentEncoded = encodeURIComponent(secret);
+    forms.add(percentEncoded);
+    forms.add(percentEncoded.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase()));
+  } catch {
+    /* malformed surrogate: raw + base64 forms still redact */
+  }
+  const formEncoded = new URLSearchParams({ value: secret }).toString().slice('value='.length);
+  forms.add(formEncoded);
+  forms.add(formEncoded.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase()));
+  return forms;
+}
+
+/** Replace every raw, URL/form-encoded, or base64 occurrence of each secret in `text` with '***'. */
 function redactSecrets(text, secrets) {
   let s = String(text);
-  for (const secret of secrets || []) s = s.split(secret).join('***');
+  const forms = new Set();
+  for (const secret of secrets || []) {
+    if (typeof secret !== 'string' || secret.length < 4) continue;
+    for (const form of encodedSecretForms(secret)) {
+      if (form.length >= 4) forms.add(form);
+    }
+  }
+  for (const form of [...forms].sort((a, b) => b.length - a.length)) {
+    s = s.split(form).join('***');
+  }
   return s;
 }
 

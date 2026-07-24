@@ -11,6 +11,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const { assertPinnedOrigin, isVetted } = require('./pinned-providers.cjs');
 
 const CALLBACK_PORTS = [3847, 3848, 3849, 3850, 3851, 3852, 3853, 3854, 3855, 3860];
 
@@ -52,6 +53,11 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function normalizeProviderErrorCode(value, fallback) {
+  const code = typeof value === 'string' ? value.trim() : '';
+  return /^[A-Za-z][A-Za-z0-9._-]{0,79}$/.test(code) ? code : fallback;
+}
+
 /**
  * Start a localhost callback server. Returns:
  *   { redirectUri, waitForCode(): Promise<{code,state}>, close() }
@@ -90,7 +96,11 @@ async function startCallbackServer({
         const state = url.searchParams.get('state');
         const stateMatches = expectedState === undefined || state === expectedState;
         const terminal = stateMatches && Boolean(code || error);
-        res.writeHead(terminal ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.writeHead(terminal ? 200 : 400, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': "default-src 'none'",
+          'X-Content-Type-Options': 'nosniff',
+        });
         res.end(
           !terminal
             ? '<html><body style="font-family:system-ui;padding:3rem;text-align:center"><h2>Callback not accepted</h2><p>Dex is still waiting for the connection to finish.</p></body></html>'
@@ -101,7 +111,10 @@ async function startCallbackServer({
         if (!terminal) return;
         clearTimeout(timeout);
         server.close();
-        if (error) reject(new Error(`Provider returned error: ${error}`));
+        if (error) {
+          const errorCode = normalizeProviderErrorCode(error, 'oauth_authorization_rejected');
+          reject(Object.assign(new Error(`Provider returned error: ${errorCode}`), { code: errorCode }));
+        }
         else resolve({ code, state });
       });
     });
@@ -119,6 +132,9 @@ async function startCallbackServer({
  */
 function buildAuthorizationUrl(providerConfig, { clientId, scopes = [], redirectUri }) {
   const url = new URL(providerConfig.authorizationUrl);
+  if (providerConfig.id && isVetted(providerConfig.id)) {
+    assertPinnedOrigin(providerConfig.id, 'authorization', url.toString());
+  }
   const params = url.searchParams;
 
   // Defaults + catalog-declared authorization_params (response_type, access_type, prompt, ...)
@@ -159,6 +175,9 @@ function buildTokenAuth(providerConfig, clientId, clientSecret, body) {
 }
 
 async function postToken(providerConfig, body, headers) {
+  if (providerConfig.id && isVetted(providerConfig.id)) {
+    assertPinnedOrigin(providerConfig.id, 'token', providerConfig.tokenUrl);
+  }
   let payload;
   if (providerConfig.bodyFormat === 'json') {
     headers['Content-Type'] = 'application/json';
@@ -183,9 +202,10 @@ async function postToken(providerConfig, body, headers) {
     json = { raw: text };
   }
   if (!res.ok) {
-    const err = new Error(`Token endpoint ${res.status}: ${json.error || text.slice(0, 200)}`);
+    const code = normalizeProviderErrorCode(json.error, 'token_exchange_rejected');
+    const err = new Error(`Token endpoint rejected the request (HTTP ${res.status}, ${code}).`);
     err.status = res.status;
-    err.body = json;
+    err.code = code;
     throw err;
   }
   return json;

@@ -94,6 +94,33 @@ test('synced-folder override composes with conversion modes without weakening on
   });
 });
 
+test('Git subprocesses allow at least 512 MiB of captured output by default', () => {
+  const migrator = require(MIGRATOR_PATH);
+
+  assert.ok(migrator.DEFAULT_SPAWN_MAX_BUFFER >= 512 * 1024 * 1024);
+});
+
+test('P3 verification treats decomposed filesystem paths as the same Git path', () => {
+  const migrator = require(MIGRATOR_PATH);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dex-migration-unicode-path-'));
+  git(root, 'init', '--quiet', '--initial-branch=main');
+  git(root, 'config', 'core.precomposeunicode', 'true');
+  const decomposed = 'Ha\u0308fele.md';
+  fs.writeFileSync(path.join(root, decomposed), 'cabinet hardware\n');
+  git(root, 'add', '--', decomposed);
+
+  const staged = migrator.stagedVaultInventory(root, path.join(root, '.git'));
+  const comparison = migrator.compareVaultInventoryPaths(
+    [{ path: decomposed }],
+    staged,
+  );
+
+  assert.deepEqual(comparison, {
+    unexpectedPaths: [],
+    reconciledPaths: [],
+  });
+});
+
 test('CLAUDE regeneration lifts the legacy extension bytes and removes legacy markers', () => {
   const migrator = require(MIGRATOR_PATH);
   const legacy = [
@@ -136,6 +163,26 @@ test('CLAUDE regeneration separates custom text without changing its bytes on di
     '# Dex\nKeep this exact final character: café\n# After custom instructions\n',
   );
   assert.equal(custom.endsWith('\n'), false);
+});
+
+test('migration report opens with recovery instructions and explains the undo archive', () => {
+  const migrator = require(MIGRATOR_PATH);
+
+  const report = migrator.renderReport({
+    complete: true,
+    modifiedBrainPaths: [],
+    remoteNames: [],
+    secretFindings: [],
+    heldBackPaths: [],
+    brainFiles: [],
+    vaultFiles: [],
+  });
+
+  assert.match(report, /^# Your Dex brain and vault split\n\n## If the migration stopped/);
+  assert.match(report, /--resume/);
+  assert.match(report, /--restore/);
+  assert.match(report, /Do not reinstall, restore backups, or run raw Git commands/);
+  assert.match(report, /pre-split-archive.*one-command undo/i);
 });
 
 test('migrator root writes require a positive ownership class or exact migration exception', () => {

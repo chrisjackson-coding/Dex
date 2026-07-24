@@ -133,7 +133,7 @@ test('permanent refresh failure stamps needs_reauth and records refresh + break 
   try {
     await withProviderConfig(
       'google',
-      { tokenUrl: 'https://tokens.example/refresh', refreshUrl: null },
+      { tokenUrl: 'https://oauth2.googleapis.com/token', refreshUrl: null },
       async () => {
         await assert.rejects(health.refreshToken('refresh-permanent', { force: true }), (error) => {
           assert.equal(error.needsReauth, true);
@@ -199,7 +199,7 @@ test('transient 500 retries once, succeeds, and never stamps a reconnect error',
   try {
     await withProviderConfig(
       'google',
-      { tokenUrl: 'https://tokens.example/refresh', refreshUrl: null, refreshRetryDelayMs: 0 },
+      { tokenUrl: 'https://oauth2.googleapis.com/token', refreshUrl: null, refreshRetryDelayMs: 0 },
       async () => {
         assert.equal(await health.refreshToken('refresh-transient', { force: true }), 'NEW-AT');
       }
@@ -276,7 +276,7 @@ test('two concurrent forced refreshes share one network call', async () => {
   try {
     await withProviderConfig(
       'google',
-      { tokenUrl: 'https://tokens.example/refresh', refreshUrl: null },
+      { tokenUrl: 'https://oauth2.googleapis.com/token', refreshUrl: null },
       async () => {
         const first = health.refreshToken('refresh-single-flight', { force: true });
         const second = health.ensureFreshToken('refresh-single-flight');
@@ -359,6 +359,26 @@ test('probe stamps only permanent auth failures and records every attempt withou
     );
   } finally {
     store.deleteToken('linear-probe');
+  }
+});
+
+test('a needs_reauth API-key connection can still be probed for recovery', async () => {
+  const connId = 'linear:probe-recovery';
+  const secret = 'RECOVERED-LINEAR-TOKEN';
+  store.saveApiKey(connId, { apiKey: secret }, { provider: 'linear', authMode: 'API_KEY' });
+  store.upsertConnection(connId, { status: 'needs_reauth', error: 'authentication_failed' });
+  let authorization;
+  try {
+    const result = await health.probeConnection(connId, {
+      fetchImpl: async (_url, options) => {
+        authorization = options.headers.Authorization;
+        return response(200, { data: { viewer: { id: 'viewer-1' } } });
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(authorization, secret);
+  } finally {
+    store.deleteToken(connId);
   }
 });
 
@@ -528,6 +548,24 @@ test('set-key records a secret-free connect event', () => {
     assert.ok(!text.includes('CONNECT-SECRET'));
   } finally {
     store.deleteToken('linear:connect-ledger');
+  }
+});
+
+test('set-key says when a stored credential is not yet verified', () => {
+  const connId = 'linear:unverified-on-save';
+  const run = spawnSync(
+    'node',
+    [path.join(DIR, 'connect.cjs'), 'set-key', connId, '--no-probe'],
+    { env: childEnv, input: 'UNVERIFIED-SECRET\n', encoding: 'utf8' }
+  );
+  try {
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(
+      run.stdout,
+      new RegExp(`not yet verified — run: node connect\\.cjs probe ${connId}`)
+    );
+  } finally {
+    store.deleteToken(connId);
   }
 });
 

@@ -28,6 +28,7 @@ const { TOKEN_ENVELOPE_VERSION, LOCK_PROTOCOL } = require('./contract.cjs');
 
 const KEYCHAIN_SERVICE = 'dex-connection-manager';
 const KEYCHAIN_ACCOUNT = 'token-store-key';
+const MAX_ENCRYPTED_DATA_BYTES = 1024 * 1024;
 
 /** Resolve the credentials directory from the configured vault root. */
 function credentialsDir() {
@@ -86,6 +87,47 @@ function ensureCredentialsGitignore(dir) {
   }
 }
 
+const _gitSafeCredentialDirs = new Set();
+
+function assertCredentialsNotTracked() {
+  const vault = fs.realpathSync(path.resolve(process.env.DEX_VAULT || process.env.VAULT_PATH || ''));
+  const credentialRoot = path.join(vault, 'System', 'credentials');
+  if (_gitSafeCredentialDirs.has(credentialRoot)) return;
+
+  let repoRoot;
+  try {
+    repoRoot = execFileSync('git', ['-C', vault, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (error) {
+    const stderr = String((error && error.stderr) || '');
+    if (error && error.status === 128 && /not a git repository|cannot change to/i.test(stderr)) {
+      _gitSafeCredentialDirs.add(credentialRoot);
+      return;
+    }
+    throw new Error(`Cannot verify whether System/credentials is tracked by Git: ${stderr.trim() || error.message}`);
+  }
+
+  const relativeCredentialRoot = path.relative(repoRoot, credentialRoot).split(path.sep).join('/');
+  let tracked;
+  try {
+    tracked = execFileSync('git', ['-C', repoRoot, 'ls-files', '--', relativeCredentialRoot], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (error) {
+    throw new Error(`Cannot verify whether System/credentials is tracked by Git: ${error.message}`);
+  }
+  if (tracked) {
+    throw new Error(
+      `Credential write refused because Git already tracks path(s) under System/credentials:\n${tracked}\n` +
+        `Remove them from Git's index without deleting local files, for example: git rm --cached -r -- ${relativeCredentialRoot}`
+    );
+  }
+  _gitSafeCredentialDirs.add(credentialRoot);
+}
+
 function tokensDir() {
   const dir = path.join(credentialsDir(), 'tokens');
   ensureDir(credentialsDir()); // ensure the .gitignore guard exists before any token lands
@@ -112,6 +154,10 @@ function keychainDisabled() {
 function keyCustodyMode() {
   if (process.platform !== 'darwin' || keychainDisabled()) return 'file';
   return fs.existsSync(path.join(credentialsDir(), '.dex-cm.key')) ? 'file' : 'keychain';
+}
+
+function fileKeyAllowed() {
+  return process.platform !== 'darwin' || keychainDisabled();
 }
 
 function keyFromMacKeychain() {
@@ -168,6 +214,13 @@ function keyFromFile() {
 }
 
 function writeKeyFile(keyB64) {
+  if (!fileKeyAllowed()) {
+    throw new Error(
+      'Dex could not store its encryption key in macOS Keychain. No credential was saved. ' +
+      'Fix Keychain access, or explicitly set DEX_CM_NO_KEYCHAIN=1 to use file-based key storage.'
+    );
+  }
+  assertCredentialsNotTracked();
   ensureDir(credentialsDir());
   const keyPath = path.join(credentialsDir(), '.dex-cm.key');
   writeFileAtomic(keyPath, keyB64, { mode: 0o600 });
@@ -195,6 +248,7 @@ class KeyLossError extends Error {
 }
 
 let _cachedKey = null;
+let _cachedTrustMacKey = null;
 /**
  * Get-or-create the 32-byte AES key. Prefers OS keychain; falls back to a 0600 file.
  *
@@ -209,7 +263,7 @@ function getKey() {
   let found = null;
   let lookupFailed = false;
   try {
-    found = keyFromMacKeychain() || keyFromFile();
+    found = keyFromMacKeychain() || (fileKeyAllowed() ? keyFromFile() : null);
   } catch (error) {
     if (error && error.code === 'DEX_CM_UNSAFE_CREDENTIAL_PATH') throw error;
     lookupFailed = true; // unreadable key source counts as loss, not as "fresh start"
@@ -233,9 +287,75 @@ function getKey() {
   if (credentialCount > 0) throw new KeyLossError(credentialCount, Boolean(found) || lookupFailed);
   const key = crypto.randomBytes(32);
   const b64 = key.toString('base64');
-  if (!storeKeyInMacKeychain(b64)) writeKeyFile(b64);
+  if (process.platform === 'darwin' && !keychainDisabled()) {
+    if (!storeKeyInMacKeychain(b64)) {
+      throw new Error(
+        'Dex could not store its encryption key in macOS Keychain. No credential was saved. ' +
+          'Fix Keychain access, or explicitly set DEX_CM_NO_KEYCHAIN=1 to use file-based key storage.'
+      );
+    }
+  } else {
+    writeKeyFile(b64);
+  }
   _cachedKey = key;
   return key;
+}
+
+/**
+ * Derive the trust-record MAC key from the encryption master key. The derived
+ * key is never stored separately and therefore inherits the same machine-local
+ * custody and key-loss behavior as encrypted credentials.
+ */
+function trustMacKey() {
+  if (_cachedTrustMacKey) return _cachedTrustMacKey;
+  _cachedTrustMacKey = Buffer.from(
+    crypto.hkdfSync('sha256', getKey(), Buffer.alloc(0), 'dex-cm-trust-mac-v1', 32)
+  );
+  return _cachedTrustMacKey;
+}
+
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (!isPlainObject(value)) return value;
+  const ordered = {};
+  for (const key of Object.keys(value).sort()) {
+    if (value[key] !== undefined) ordered[key] = canonicalValue(value[key]);
+  }
+  return ordered;
+}
+
+/** Stable JSON encoding shared by registry, metadata, and ledger MACs. */
+function canonicalJSON(value) {
+  return JSON.stringify(canonicalValue(value));
+}
+
+function trustMac(payload) {
+  return crypto.createHmac('sha256', trustMacKey()).update(canonicalJSON(payload)).digest('base64');
+}
+
+function macMatches(actual, payload) {
+  if (typeof actual !== 'string') return false;
+  let provided;
+  try {
+    provided = Buffer.from(actual, 'base64');
+  } catch {
+    return false;
+  }
+  const expected = Buffer.from(trustMac(payload), 'base64');
+  return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+}
+
+function reloadCachedKeyFromCustody() {
+  let found = null;
+  try {
+    found = keyFromMacKeychain() || (fileKeyAllowed() ? keyFromFile() : null);
+  } catch {
+    return false;
+  }
+  if (!found || found.length !== 32 || (_cachedKey && found.equals(_cachedKey))) return false;
+  _cachedKey = found;
+  _cachedTrustMacKey = null;
+  return true;
 }
 
 /**
@@ -259,11 +379,16 @@ function recoverFromKeyLoss() {
     let stamped = 0;
     for (const k of Object.keys(reg)) {
       if (k === '_defaults' || k === '_meta' || !reg[k] || !reg[k].service) continue;
-      reg[k] = { ...reg[k], status: 'needs_reauth', error: 'encryption_key_lost' };
+      upsertConnectionInRegistry(reg, k, {
+        status: 'needs_reauth',
+        verification: 'unverified',
+        error: 'encryption_key_lost',
+      });
       stamped++;
     }
     writeRegistry(reg);
     _cachedKey = null;
+    _cachedTrustMacKey = null;
     return Math.max(stamped, files.length);
   });
 }
@@ -343,13 +468,36 @@ function encrypt(plaintext, aad = '') {
   return { v: TOKEN_ENVELOPE_VERSION, aad, iv: iv.toString('base64'), tag: tag.toString('base64'), data: data.toString('base64') };
 }
 
+function decodeCanonicalBase64(value, field, { exactBytes, maxBytes } = {}) {
+  const maxEncodedLength = maxBytes === undefined ? Infinity : Math.ceil(maxBytes / 3) * 4;
+  if (
+    typeof value !== 'string' ||
+    value.length > maxEncodedLength ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    throw new Error(`Unsupported encrypted credential envelope: invalid ${field}.`);
+  }
+  const decoded = Buffer.from(value, 'base64');
+  if (
+    decoded.toString('base64') !== value ||
+    (exactBytes !== undefined && decoded.length !== exactBytes) ||
+    (maxBytes !== undefined && decoded.length > maxBytes)
+  ) {
+    throw new Error(`Unsupported encrypted credential envelope: invalid ${field}.`);
+  }
+  return decoded;
+}
+
 function decrypt(envelope, aad = '') {
   if (!envelope || envelope.v !== TOKEN_ENVELOPE_VERSION) throw new Error('Unsupported encrypted credential envelope version.');
   if (envelope.aad !== aad) throw new EnvelopeBindingError();
-  const decipher = crypto.createDecipheriv('aes-256-gcm', getKey(), Buffer.from(envelope.iv, 'base64'));
+  const iv = decodeCanonicalBase64(envelope.iv, 'iv', { exactBytes: 12 });
+  const tag = decodeCanonicalBase64(envelope.tag, 'tag', { exactBytes: 16 });
+  const data = decodeCanonicalBase64(envelope.data, 'data', { maxBytes: MAX_ENCRYPTED_DATA_BYTES });
+  const decipher = crypto.createDecipheriv('aes-256-gcm', getKey(), iv);
   decipher.setAAD(Buffer.from(aad, 'utf8'));
-  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
-  const out = Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]);
+  decipher.setAuthTag(tag);
+  const out = Buffer.concat([decipher.update(data), decipher.final()]);
   return out.toString('utf8');
 }
 
@@ -372,7 +520,7 @@ function parseConnectionId(id, { allowLegacyProviderCase = false } = {}) {
     throw new Error(`Invalid provider in connection id '${id}'. Use letters, digits, '.', '-' or '_' (must start with a letter or digit).`);
   }
   if (rawProvider.includes('__')) {
-    throw new Error(`Invalid provider in connection id '${id}'. '__' is reserved for separating account names in credential filenames.`);
+    throw new Error(`Invalid connection id '${id}': reserved filename separator '__' is not allowed.`);
   }
   const lowercaseProvider = rawProvider.toLowerCase();
   if (rawProvider !== lowercaseProvider && !allowLegacyProviderCase) {
@@ -382,6 +530,9 @@ function parseConnectionId(id, { allowLegacyProviderCase = false } = {}) {
   if (i === -1) return { provider, alias: null, connId: provider };
   const alias = s.slice(i + 1).toLowerCase();
   if (!/^[a-z0-9_-]+$/.test(alias)) throw new Error(`Invalid connection alias in '${id}'. Use letters, digits, '-' or '_'.`);
+  if (alias.includes('__')) {
+    throw new Error(`Invalid connection id '${id}': reserved filename separator '__' is not allowed.`);
+  }
   return { provider, alias, connId: `${provider}:${alias}` };
 }
 
@@ -415,13 +566,21 @@ function tokenPath(connId) {
   return path.join(tokensDir(), `${String(connId).replace(/:/g, '__')}.json`);
 }
 
+function credentialDigest(connId) {
+  const p = tokenPath(connId);
+  if (!fs.existsSync(p)) return 'none';
+  return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+}
+
 /** Persist a token object (encrypted) and refresh the registry entry. `connId` may be `provider` or `provider:alias`. */
 function saveToken(connId, token, meta = {}) {
+  assertCredentialsNotTracked();
   const parsed = parseConnectionId(connId, { allowLegacyProviderCase: Boolean(readRegistry()[connId]) });
   // Encrypt BEFORE touching the registry: if the key is lost this triggers the
   // loud recovery first, so the entry we then upsert stays 'connected'.
   const envelope = JSON.stringify(encryptForSave(JSON.stringify(token), `token:${connId}`), null, 2);
   return withStoreLock(() => {
+    const reg = readRegistry();
     const fields = {
       provider: meta.provider || parsed.provider,
       status: 'connected',
@@ -433,11 +592,13 @@ function saveToken(connId, token, meta = {}) {
       ...meta.extra,
     };
     if (parsed.alias) fields.alias = parsed.alias;
-    // Registry first, then the token file: a crash in between leaves a registry
-    // entry with no token (harmless "not connected"), never a token file with no
-    // registry entry (which would look like registry data loss).
-    upsertConnection(connId, fields);
+    // The entry MAC binds the exact encrypted envelope, so the token must land
+    // first. A crash in this narrow window fails closed: the old entry's digest
+    // no longer matches, and the existing rebuild path can recover a token that
+    // landed before its registry entry.
     writeFileAtomic(tokenPath(connId), envelope, { mode: 0o600 });
+    upsertConnectionInRegistry(reg, connId, fields, { freshCredential: true });
+    writeRegistry(reg);
     return token;
   });
 }
@@ -453,10 +614,12 @@ function saveToken(connId, token, meta = {}) {
  * @param meta      { provider, scopes, connectedAt, extra }
  */
 function saveApiKey(service, secretObj, meta = {}) {
+  assertCredentialsNotTracked();
   const stored = { kind: 'api_key', ...secretObj, obtained_at: Date.now() };
   const parsed = parseConnectionId(service, { allowLegacyProviderCase: Boolean(readRegistry()[service]) });
   const envelope = JSON.stringify(encryptForSave(JSON.stringify(stored), `token:${service}`), null, 2); // key-loss recovery before registry writes; see saveToken
   return withStoreLock(() => {
+    const reg = readRegistry();
     const fields = {
       provider: meta.provider || parsed.provider,
       authMode: meta.authMode || 'API_KEY',
@@ -469,8 +632,9 @@ function saveApiKey(service, secretObj, meta = {}) {
       ...meta.extra,
     };
     if (parsed.alias) fields.alias = parsed.alias;
-    upsertConnection(service, fields); // registry first; see saveToken
     writeFileAtomic(tokenPath(service), envelope, { mode: 0o600 });
+    upsertConnectionInRegistry(reg, service, fields, { freshCredential: true });
+    writeRegistry(reg);
     return stored;
   });
 }
@@ -575,6 +739,163 @@ function isPlainObject(v) {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 }
 
+function registryMacPayload(connId, entry) {
+  return {
+    connId,
+    service: entry.service,
+    provider: entry.provider,
+    status: entry.status,
+    error: entry.error,
+    verification: entry.verification,
+    credentialDigest: entry.credentialDigest,
+    epoch: entry.epoch,
+    counter: entry.counter,
+  };
+}
+
+function registryMetaPayload(meta) {
+  return { counter: meta.counter };
+}
+
+function registryMetaVerified(reg) {
+  const meta = reg && reg._meta;
+  return Boolean(
+    isPlainObject(meta) &&
+      Number.isInteger(meta.counter) &&
+      meta.counter >= 0 &&
+      macMatches(meta.mac, registryMetaPayload(meta))
+  );
+}
+
+function registryEntryVerified(connId, entry, metaCounter = Infinity) {
+  return Boolean(
+    isPlainObject(entry) &&
+      Number.isInteger(entry.counter) &&
+      entry.counter >= 1 &&
+      entry.counter <= metaCounter &&
+      Number.isInteger(entry.epoch) &&
+      entry.epoch >= 1 &&
+      typeof entry.credentialDigest === 'string' &&
+      entry.credentialDigest === credentialDigest(connId) &&
+      macMatches(entry.mac, registryMacPayload(connId, entry))
+  );
+}
+
+function downgradeUntrustedEntry(entry, error = 'trust_unverified') {
+  return {
+    ...entry,
+    status: 'needs_reauth',
+    verification: 'unverified',
+    error,
+  };
+}
+
+function verifyRegistryTrust(reg) {
+  if (!hasServiceEntries(reg)) return reg;
+  let metaVerified = false;
+  let metaCounter = -1;
+  let keyLost = false;
+  try {
+    metaVerified = registryMetaVerified(reg);
+    if (!metaVerified && reloadCachedKeyFromCustody()) metaVerified = registryMetaVerified(reg);
+    if (metaVerified) metaCounter = reg._meta.counter;
+  } catch (error) {
+    if (error && error.code === 'DEX_CM_KEY_LOST') keyLost = true;
+    else throw error;
+  }
+  const verified = { ...reg };
+  for (const [connId, entry] of Object.entries(reg)) {
+    if (connId === '_defaults' || connId === '_meta' || !entry || !entry.service) continue;
+    let trusted = false;
+    if (metaVerified && !keyLost) {
+      try {
+        trusted = registryEntryVerified(connId, entry, metaCounter);
+      } catch (error) {
+        if (error && error.code === 'DEX_CM_KEY_LOST') keyLost = true;
+        else throw error;
+      }
+    }
+    verified[connId] = trusted
+      ? entry
+      : downgradeUntrustedEntry(entry, keyLost ? 'encryption_key_lost' : 'trust_unverified');
+  }
+  return verified;
+}
+
+function allocateCounter(reg) {
+  let current = 0;
+  try {
+    if (registryMetaVerified(reg)) current = reg._meta.counter;
+  } catch (error) {
+    if (!error || error.code !== 'DEX_CM_KEY_LOST') throw error;
+  }
+  const counter = current + 1;
+  reg._meta = { ...(isPlainObject(reg._meta) ? reg._meta : {}), counter };
+  reg._meta.mac = trustMac(registryMetaPayload(reg._meta));
+  return counter;
+}
+
+function upsertConnectionInRegistry(reg, service, fields, { freshCredential = false } = {}) {
+  const previous = isPlainObject(reg[service]) ? reg[service] : {};
+  const merged = { ...previous, service, ...fields };
+  const priorEpoch = Number.isInteger(previous.epoch) && previous.epoch >= 1 ? previous.epoch : 0;
+  merged.provider = merged.provider || parseConnectionId(service).provider;
+  merged.status = merged.status || 'connected';
+  merged.error = merged.error === undefined ? null : merged.error;
+  merged.verification = merged.verification || 'unverified';
+  merged.credentialDigest = credentialDigest(service);
+  merged.epoch = freshCredential ? priorEpoch + 1 : Math.max(1, priorEpoch);
+  merged.counter = allocateCounter(reg);
+  merged.mac = trustMac(registryMacPayload(service, merged));
+  reg[service] = merged;
+  return merged;
+}
+
+function ledgerMacPayload(row) {
+  const { mac: _mac, ...payload } = row;
+  return payload;
+}
+
+function attestLedgerRow(connId, row) {
+  return withStoreLock(() => {
+    const reg = readRegistry();
+    const entry = reg[connId];
+    const counter = allocateCounter(reg);
+    const attested = {
+      ...row,
+      connId,
+      credentialDigest: credentialDigest(connId),
+      epoch: entry && Number.isInteger(entry.epoch) ? entry.epoch : 1,
+      counter,
+    };
+    attested.mac = trustMac(ledgerMacPayload(attested));
+    writeRegistry(reg);
+    return attested;
+  });
+}
+
+function verifyLedgerRow(connId, row) {
+  if (!isPlainObject(row) || row.connId !== connId || !Number.isInteger(row.counter) || row.counter < 1) return false;
+  try {
+    return macMatches(row.mac, ledgerMacPayload(row));
+  } catch {
+    return false;
+  }
+}
+
+function ledgerRowMatchesCurrentCredential(connId, row) {
+  try {
+    const entry = readRegistry()[connId];
+    return Boolean(
+      entry &&
+        row.credentialDigest === credentialDigest(connId) &&
+        row.epoch === entry.epoch
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Read the connection registry. A damaged registry must NEVER silently reset
  * to empty (the old behaviour: every connection looked "not connected" and the
@@ -589,16 +910,22 @@ function isPlainObject(v) {
 function readRegistry() {
   const p = registryPath();
   if (fs.existsSync(p)) {
+    let reg;
     try {
-      const reg = JSON.parse(fs.readFileSync(p, 'utf8'));
-      if (isPlainObject(reg) && (hasServiceEntries(reg) || !listTokenFiles().length)) return reg;
+      reg = JSON.parse(fs.readFileSync(p, 'utf8'));
     } catch {
       /* unparseable: fall through to recovery */
+    }
+    // Trust verification stays outside the parse recovery catch. A filesystem
+    // or key-custody failure must fail closed, never quarantine a valid registry
+    // as if its JSON were corrupt.
+    if (isPlainObject(reg) && (hasServiceEntries(reg) || !listTokenFiles().length)) {
+      return verifyRegistryTrust(reg);
     }
   } else if (!listTokenFiles().length) {
     return {}; // genuine first run: nothing saved yet
   }
-  return recoverRegistry();
+  return verifyRegistryTrust(recoverRegistry());
 }
 
 /** Quarantine a damaged registry and rebuild it from the token files on disk. Idempotent and cross-process safe. */
@@ -701,6 +1028,16 @@ function rebuildRegistryFromTokens(reason, quarantinedName) {
     recovered,
     unreadable,
   };
+  try {
+    for (const [connId, entry] of Object.entries(rebuilt)) {
+      if (connId === '_meta' || !entry || !entry.service) continue;
+      upsertConnectionInRegistry(rebuilt, connId, entry, { freshCredential: true });
+    }
+  } catch (error) {
+    if (!error || error.code !== 'DEX_CM_KEY_LOST') throw error;
+    delete rebuilt._meta.counter;
+    delete rebuilt._meta.mac;
+  }
   return rebuilt;
 }
 
@@ -712,9 +1049,9 @@ function writeRegistry(reg) {
 function upsertConnection(service, fields) {
   return withStoreLock(() => {
     const reg = readRegistry();
-    reg[service] = { ...(reg[service] || {}), service, ...fields };
+    const entry = upsertConnectionInRegistry(reg, service, fields);
     writeRegistry(reg);
-    return reg[service];
+    return entry;
   });
 }
 
@@ -776,6 +1113,7 @@ function getOAuthApp(provider) {
  */
 function setOAuthApp(provider, { clientId, clientSecret = '' }) {
   if (!clientId) throw new Error('setOAuthApp requires a clientId.');
+  assertCredentialsNotTracked();
   ensureDir(credentialsDir());
   const encryptedSecret = encryptForSave(clientSecret, `oauth-app:${provider}`);
   return withStoreLock(() => {
@@ -814,6 +1152,12 @@ module.exports = {
   setOAuthApp,
   encrypt,
   decrypt,
+  trustMacKey,
+  canonicalJSON,
+  credentialDigest,
+  attestLedgerRow,
+  verifyLedgerRow,
+  ledgerRowMatchesCurrentCredential,
   KeyLossError,
   EnvelopeBindingError,
   recoverFromKeyLoss,
