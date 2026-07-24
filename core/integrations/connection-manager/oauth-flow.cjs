@@ -43,6 +43,15 @@ function listenOnFirstFreePort(ports, createServer) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Start a localhost callback server. Returns:
  *   { redirectUri, waitForCode(): Promise<{code,state}>, close() }
@@ -79,19 +88,20 @@ async function startCallbackServer({
         const error = url.searchParams.get('error');
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
-        const stateMismatch = expectedState !== undefined && state !== expectedState;
-        res.writeHead(stateMismatch ? 400 : 200, { 'Content-Type': 'text/html; charset=utf-8' });
+        const stateMatches = expectedState === undefined || state === expectedState;
+        const terminal = stateMatches && Boolean(code || error);
+        res.writeHead(terminal ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(
-          stateMismatch
-            ? '<html><body style="font-family:system-ui;padding:3rem;text-align:center"><h2>Connection aborted</h2><p>OAuth state mismatch.</p></body></html>'
+          !terminal
+            ? '<html><body style="font-family:system-ui;padding:3rem;text-align:center"><h2>Callback not accepted</h2><p>Dex is still waiting for the connection to finish.</p></body></html>'
             : error
-            ? `<html><body style="font-family:system-ui;padding:3rem;text-align:center"><h2>Connection failed</h2><p>${error}</p><p>You can close this tab and return to Dex.</p></body></html>`
+            ? `<html><body style="font-family:system-ui;padding:3rem;text-align:center"><h2>Connection failed</h2><p>${escapeHtml(error)}</p><p>You can close this tab and return to Dex.</p></body></html>`
             : `<html><body style="font-family:system-ui;padding:3rem;text-align:center"><h2>✅ Connected</h2><p>You can close this tab and return to Dex.</p></body></html>`
         );
+        if (!terminal) return;
         clearTimeout(timeout);
         server.close();
-        if (stateMismatch) reject(new Error('OAuth state mismatch — possible CSRF, aborting.'));
-        else if (error) reject(new Error(`Provider returned error: ${error}`));
+        if (error) reject(new Error(`Provider returned error: ${error}`));
         else resolve({ code, state });
       });
     });

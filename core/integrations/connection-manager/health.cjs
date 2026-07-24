@@ -211,8 +211,8 @@ function tokenRevision(token) {
   ]);
 }
 
-function recordConnectionEvent(connId, op, row = {}) {
-  return ledger.append(connId, { op, ...row });
+function recordConnectionEvent(connId, op, row = {}, secrets = []) {
+  return ledger.append(connId, { op, ...row }, { secrets });
 }
 
 /**
@@ -281,6 +281,14 @@ async function refreshToken(service, { force = false } = {}) {
       const app = store.getOAuthApp(provider); // OAuth app is shared per provider, not per account
       if (!app) throw new Error(`No OAuth app credentials for '${provider}'. Add them to oauth-apps.json.`);
       const providerConfig = catalog.getProviderConfig(provider, reg.connectionConfig || {});
+      const { secretsOf } = require('./auth-context.cjs');
+      const refreshSecrets = secretsOf({
+        headers: {
+          accessToken: current.access_token,
+          refreshToken: current.refresh_token || token.refresh_token,
+          clientSecret: app.clientSecret,
+        },
+      });
       try {
         const result = await refreshOAuthToken({
           tokenUrl: providerConfig.refreshUrl || providerConfig.tokenUrl,
@@ -292,6 +300,7 @@ async function refreshToken(service, { force = false } = {}) {
           retryDelayMs: Number.isFinite(providerConfig.refreshRetryDelayMs)
             ? providerConfig.refreshRetryDelayMs
             : undefined,
+          secrets: refreshSecrets,
         });
         const fresh = normalizeRefreshResult(result, current);
         store.saveToken(connId, fresh, { provider: providerConfig.id, connectedAt: reg.connectedAt });
@@ -303,13 +312,13 @@ async function refreshToken(service, { force = false } = {}) {
         recordConnectionEvent(connId, 'refresh', {
           ok: false,
           error: { category: needsReauth ? 'auth_permanent' : 'transient', code, message: code },
-        });
+        }, refreshSecrets);
         if (needsReauth) {
           store.upsertConnection(connId, { status: 'needs_reauth', error: code });
           recordConnectionEvent(connId, 'break', {
             ok: false,
             error: { category: 'auth_permanent', code, message: code },
-          });
+          }, refreshSecrets);
         }
         throw Object.assign(err, { needsReauth });
       }

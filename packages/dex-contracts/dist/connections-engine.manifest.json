@@ -11,8 +11,8 @@
         "connection-manager"
       ],
       "fileCount": 17,
-      "totalBytes": 172291,
-      "treeHash": "aaa7573e05647bff28a757ba01b300bc9d4e66eafc0d854806be1531a29e7478",
+      "totalBytes": 176402,
+      "treeHash": "5bcb231f548b02b0fa41432882aab41460b5329027bcdeb1934594267ccd0e69",
       "files": [
         {
           "path": "auth-context.cjs",
@@ -26,8 +26,8 @@
         },
         {
           "path": "connect.cjs",
-          "bytes": 27241,
-          "sha256": "fdb913096eabc9570644f33263ae93ec6ab4634d931d02e20d1cf8bb5d8de0a8"
+          "bytes": 27667,
+          "sha256": "8e3b5ef4b4c8d0a55e063f7c6beaf5061b6fb9ea983c44db21be16f05264a4ae"
         },
         {
           "path": "contract.cjs",
@@ -51,8 +51,8 @@
         },
         {
           "path": "health.cjs",
-          "bytes": 14672,
-          "sha256": "df063349f49c85a08c8d608905cad6b4dd635af2b0f82814360afb7db24a0f4f"
+          "bytes": 15063,
+          "sha256": "f3cbe31f0e20d82e82f8c0181807fa55bbd21734889d08dda8ae89dff5bdef88"
         },
         {
           "path": "index.cjs",
@@ -61,8 +61,8 @@
         },
         {
           "path": "lib/connector-ledger.js",
-          "bytes": 4799,
-          "sha256": "4a9529e715d9fe9628d766ec5333137e8ecaac3d68aeac4355db08ab86cc5aba"
+          "bytes": 4981,
+          "sha256": "d38c8b8fe0e8a3c9e258dd35b25ad8902b336287b304b140a88bdda55eb8ee09"
         },
         {
           "path": "lib/connector-model.js",
@@ -76,8 +76,8 @@
         },
         {
           "path": "lib/oauth-refresh.js",
-          "bytes": 10609,
-          "sha256": "cdc837a0acfbd7f8e0822f5d8da7c6f2726de8f0d7f5f2ae3daa57fa95616392"
+          "bytes": 10761,
+          "sha256": "8ae2f42d507a078aa9f48ac01a0c67bd5a0004742802da9332a95356da57c731"
         },
         {
           "path": "lib/rate-limit.js",
@@ -86,8 +86,8 @@
         },
         {
           "path": "oauth-flow.cjs",
-          "bytes": 9195,
-          "sha256": "6ab21fb5139da00a38f98658d38c6c0ef416aa06aba4ef9073d16b450863979d"
+          "bytes": 9416,
+          "sha256": "8e4d0ed9d943d5656f9f98f8ae4d655187703079e77f60636902d8f1d35fcd33"
         },
         {
           "path": "README.md",
@@ -96,8 +96,8 @@
         },
         {
           "path": "token-store.cjs",
-          "bytes": 30324,
-          "sha256": "749230cf3c607a9faf1d55efb7e30639644345e35009b8b86477d07a842f92a8"
+          "bytes": 33063,
+          "sha256": "0512e061571062877d19c762206a467244cff609b57e3c23019f4e8ac80ed97f"
         }
       ]
     }

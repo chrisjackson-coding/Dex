@@ -25,12 +25,13 @@ const FILES = {
   },
   'oauth-refresh.js': {
     source: '0f29891a988d913c8b4bfddc9ee9d8f4c91328784534107ff65abe3d4cac4783',
-    lifted: 'cdc837a0acfbd7f8e0822f5d8da7c6f2726de8f0d7f5f2ae3daa57fa95616392',
+    lifted: '8ae2f42d507a078aa9f48ac01a0c67bd5a0004742802da9332a95356da57c731',
     mode: 'injectable-delay',
     divergences: [
       'source provenance header',
       'injectable delay used only to prove Retry-After clamping',
       'credential-bearing refresh requests refuse redirects',
+      'known operation secrets redact provider-controlled refresh errors before they escape',
     ],
   },
   'connector-model.js': {
@@ -58,13 +59,14 @@ const FILES = {
   },
   'connector-ledger.js': {
     source: '956612fbebc115fa7512aaf5db91676bfe40fa0c08d0927e52f4508e28e14cbf',
-    lifted: '4a9529e715d9fe9628d766ec5333137e8ecaac3d68aeac4355db08ab86cc5aba',
+    lifted: 'd38c8b8fe0e8a3c9e258dd35b25ad8902b336287b304b140a88bdda55eb8ee09',
     mode: 'core-adaptation',
     divergences: [
       'credentials/ledger path and Core connect, refresh, probe, and break vocabulary',
       'Desktop sync counts, cursors, schedules, and page receipts omitted',
       'fs-safe is the sole atomic writer and adds a per-connection cross-process lock',
       'successful probes are scoped to the current connect epoch after a credential replacement',
+      'operation secrets redact provider-controlled error fields before ledger persistence',
     ],
   },
 };
@@ -117,6 +119,20 @@ for (const [name, contract] of Object.entries(FILES)) {
             '\t\t\t\t// Never let a refresh token or client secret cross a redirect.\n' +
             '\t\t\t\tredirect: "error",\n',
           ''
+        )
+        .replace('\tsecrets = [],\n', '')
+        .replace('\tconst safeMessage = (message) => require("../auth-context.cjs").redactSecrets(message, secrets);\n', '')
+        .replace(
+          '\t\t\t\tsafeMessage(timedOut ? `Token refresh timed out after ${timeoutMs}ms` : `Token refresh request failed: ${error?.message || "unknown"}`),\n',
+          '\t\t\t\ttimedOut ? `Token refresh timed out after ${timeoutMs}ms` : `Token refresh request failed: ${error?.message || "unknown"}`,\n'
+        )
+        .replace(
+          'throw new RefreshError(safeMessage(data?.error_description || data?.error || "Token refresh was rate limited"), {',
+          'throw new RefreshError(data?.error_description || data?.error || "Token refresh was rate limited", {'
+        )
+        .replace(
+          'throw new RefreshError(safeMessage(data?.error_description || data?.error || "Token refresh was rejected"), {',
+          'throw new RefreshError(data?.error_description || data?.error || "Token refresh was rejected", {'
         )
         .replace('await delayImpl(waitMs)', 'await delay(waitMs)');
       assert.equal(normalized, source.toString());
