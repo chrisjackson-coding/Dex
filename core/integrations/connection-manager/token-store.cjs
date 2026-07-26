@@ -8,6 +8,7 @@
  *   connections.json        plaintext registry: status/scopes/timestamps (NO secrets)
  *   oauth-apps.json         plaintext client ids + encrypted client-secret envelopes
  *   .dex-cm.key             fallback encryption key (0600) if OS keychain unavailable
+ *   .dex-cm.sealed          durable { custody:'sealed-host' } host-custody marker
  *   .gitignore              auto-written ('*') so a git-tracked vault never commits secrets
  *
  * Multi-account: a connection id is `provider` or `provider:alias`. Bare `provider`
@@ -28,6 +29,7 @@ const { TOKEN_ENVELOPE_VERSION, LOCK_PROTOCOL } = require('./contract.cjs');
 
 const KEYCHAIN_SERVICE = 'dex-connection-manager';
 const KEYCHAIN_ACCOUNT = 'token-store-key';
+const SEALED_MARKER_NAME = '.dex-cm.sealed';
 const MAX_ENCRYPTED_DATA_BYTES = 1024 * 1024;
 const DEFAULTS_TRUST_ERROR = Symbol('defaultsTrustError');
 
@@ -162,7 +164,80 @@ function keychainDisabled() {
   return process.env.DEX_CM_NO_KEYCHAIN === '1';
 }
 
+class SealedHostRequiredError extends Error {
+  constructor() {
+    super('This credential store is sealed to the signed Dex desktop host, which is not reachable.');
+    this.name = 'SealedHostRequiredError';
+    this.code = 'DEX_CM_SEALED_HOST_REQUIRED';
+  }
+}
+
+// TODO(native/XPC lane): inject the real dex-credd client from the signed
+// Desktop host. This Core lane intentionally provides only the seam and a mock.
+let _hostDecryptor = null;
+
+function setHostDecryptor(hostDecryptor) {
+  _hostDecryptor = hostDecryptor || null;
+}
+
+function sealedMarkerPath() {
+  return path.join(credentialsDir(), SEALED_MARKER_NAME);
+}
+
+function sealedHostMarked() {
+  const markerPath = sealedMarkerPath();
+  let stat;
+  try {
+    stat = fs.lstatSync(markerPath);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return false;
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    const error = new Error(`The sealed-custody marker at ${markerPath} is not a regular file.`);
+    error.code = 'DEX_CM_UNSAFE_CREDENTIAL_PATH';
+    throw error;
+  }
+  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+    const error = new Error(`The sealed-custody marker at ${markerPath} belongs to a different user.`);
+    error.code = 'DEX_CM_UNSAFE_CREDENTIAL_PATH';
+    throw error;
+  }
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+  } catch {
+    const error = new Error(`The sealed-custody marker at ${markerPath} is unreadable.`);
+    error.code = 'DEX_CM_SEALED_MARKER_INVALID';
+    throw error;
+  }
+  if (!marker || marker.v !== 1 || marker.custody !== 'sealed-host') {
+    const error = new Error(`The sealed-custody marker at ${markerPath} is invalid.`);
+    error.code = 'DEX_CM_SEALED_MARKER_INVALID';
+    throw error;
+  }
+  return true;
+}
+
+function requireHostDecryptor(requiredMethods = ['decrypt']) {
+  let available = false;
+  try {
+    available = Boolean(_hostDecryptor && typeof _hostDecryptor.available === 'function') &&
+      _hostDecryptor.available() === true;
+  } catch {
+    available = false;
+  }
+  if (
+    !available ||
+    requiredMethods.some((method) => typeof _hostDecryptor[method] !== 'function')
+  ) {
+    throw new SealedHostRequiredError();
+  }
+  return _hostDecryptor;
+}
+
 function keyCustodyMode() {
+  if (sealedHostMarked()) return 'sealed-host';
   if (process.platform !== 'darwin' || keychainDisabled()) return 'file';
   return fs.existsSync(path.join(credentialsDir(), '.dex-cm.key')) ? 'file' : 'keychain';
 }
@@ -200,6 +275,89 @@ function storeKeyInMacKeychain(keyB64) {
     return false;
   }
 }
+
+function strictMacKeychainSnapshot() {
+  if (process.platform !== 'darwin' || keychainDisabled()) {
+    return { applicable: false, present: false, value: null };
+  }
+  try {
+    const value = execFileSync(
+      'security',
+      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    ).trim();
+    return { applicable: true, present: true, value };
+  } catch (error) {
+    if (error && error.status === 44) {
+      return { applicable: true, present: false, value: null };
+    }
+    throw new Error(`Cannot verify the legacy macOS Keychain item before sealing: ${error.message}`);
+  }
+}
+
+const systemLegacyKeyCustody = {
+  capture() {
+    const keyPath = path.join(credentialsDir(), '.dex-cm.key');
+    let fileKey = null;
+    try {
+      const stat = fs.lstatSync(keyPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        const error = new Error(`The encryption key at ${keyPath} is a symlink or not a regular file.`);
+        error.code = 'DEX_CM_UNSAFE_CREDENTIAL_PATH';
+        throw error;
+      }
+      fileKey = { contents: fs.readFileSync(keyPath), mode: stat.mode & 0o777 };
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
+    }
+    return { fileKey, keychain: strictMacKeychainSnapshot() };
+  },
+
+  purge(snapshot) {
+    const keyPath = path.join(credentialsDir(), '.dex-cm.key');
+    if (snapshot.fileKey) fs.unlinkSync(keyPath);
+    if (snapshot.keychain.present) {
+      try {
+        execFileSync(
+          'security',
+          ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
+          { stdio: ['ignore', 'ignore', 'pipe'] }
+        );
+      } catch (error) {
+        throw new Error(`Cannot delete the legacy macOS Keychain item while sealing: ${error.message}`);
+      }
+    }
+  },
+
+  verifyPurged() {
+    const keyPath = path.join(credentialsDir(), '.dex-cm.key');
+    if (fs.existsSync(keyPath)) return false;
+    return !strictMacKeychainSnapshot().present;
+  },
+
+  restore(snapshot) {
+    const keyPath = path.join(credentialsDir(), '.dex-cm.key');
+    if (snapshot.fileKey) {
+      writeFileAtomic(keyPath, snapshot.fileKey.contents, { mode: snapshot.fileKey.mode || 0o600 });
+    } else if (fs.existsSync(keyPath)) {
+      fs.unlinkSync(keyPath);
+    }
+    if (snapshot.keychain.applicable) {
+      const current = strictMacKeychainSnapshot();
+      if (snapshot.keychain.present) {
+        if (!storeKeyInMacKeychain(snapshot.keychain.value)) {
+          throw new Error('Cannot restore the legacy macOS Keychain item after sealing failed.');
+        }
+      } else if (current.present) {
+        execFileSync(
+          'security',
+          ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
+          { stdio: ['ignore', 'ignore', 'pipe'] }
+        );
+      }
+    }
+  },
+};
 
 function keyFromFile() {
   const keyPath = path.join(credentialsDir(), '.dex-cm.key');
@@ -341,7 +499,22 @@ function canonicalJSON(value) {
 }
 
 function trustMac(payload) {
+  if (sealedHostMarked()) {
+    return trustMacViaHost(requireHostDecryptor(['mac']), payload);
+  }
   return crypto.createHmac('sha256', trustMacKey()).update(canonicalJSON(payload)).digest('base64');
+}
+
+function trustMacViaHost(hostDecryptor, payload) {
+  const mac = hostDecryptor.mac(canonicalJSON(payload));
+  if (
+    typeof mac !== 'string' ||
+    Buffer.from(mac, 'base64').length !== 32 ||
+    Buffer.from(mac, 'base64').toString('base64') !== mac
+  ) {
+    throw new Error('The sealed host returned an invalid trust MAC.');
+  }
+  return mac;
 }
 
 function macMatches(actual, payload) {
@@ -471,6 +644,9 @@ class EnvelopeBindingError extends Error {
 }
 
 function encrypt(plaintext, aad = '') {
+  if (sealedHostMarked()) {
+    return sealViaHost(requireHostDecryptor(['seal']), plaintext, aad);
+  }
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', getKey(), iv);
   cipher.setAAD(Buffer.from(aad, 'utf8'));
@@ -500,6 +676,14 @@ function decodeCanonicalBase64(value, field, { exactBytes, maxBytes } = {}) {
 }
 
 function decrypt(envelope, aad = '') {
+  if (sealedHostMarked()) {
+    if (!envelope || envelope.aad !== aad) throw new EnvelopeBindingError();
+    const plaintext = requireHostDecryptor().decrypt(hostCredentialId(aad), envelope);
+    if (typeof plaintext !== 'string') {
+      throw new Error('The sealed host returned an invalid credential payload.');
+    }
+    return plaintext;
+  }
   if (!envelope || envelope.v !== TOKEN_ENVELOPE_VERSION) throw new Error('Unsupported encrypted credential envelope version.');
   if (envelope.aad !== aad) throw new EnvelopeBindingError();
   const iv = decodeCanonicalBase64(envelope.iv, 'iv', { exactBytes: 12 });
@@ -510,6 +694,210 @@ function decrypt(envelope, aad = '') {
   decipher.setAuthTag(tag);
   const out = Buffer.concat([decipher.update(data), decipher.final()]);
   return out.toString('utf8');
+}
+
+function hostCredentialId(aad) {
+  return aad.startsWith('token:') ? aad.slice('token:'.length) : aad;
+}
+
+function sealViaHost(hostDecryptor, plaintext, aad) {
+  const envelope = hostDecryptor.seal(hostCredentialId(aad), plaintext, aad);
+  if (
+    !isPlainObject(envelope) ||
+    envelope.custody !== 'sealed-host' ||
+    envelope.aad !== aad
+  ) {
+    throw new Error('The sealed host returned an invalid credential envelope.');
+  }
+  return envelope;
+}
+
+function snapshotFileForSeal(file) {
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      const error = new Error(`Credential migration refused an unsafe file at ${file}.`);
+      error.code = 'DEX_CM_UNSAFE_CREDENTIAL_PATH';
+      throw error;
+    }
+    return { exists: true, contents: fs.readFileSync(file), mode: stat.mode & 0o777 };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return { exists: false, contents: null, mode: 0o600 };
+    throw error;
+  }
+}
+
+function restoreFileAfterSeal(file, snapshot) {
+  if (snapshot.exists) {
+    writeFileAtomic(file, snapshot.contents, { mode: snapshot.mode || 0o600 });
+  } else if (fs.existsSync(file)) {
+    fs.unlinkSync(file);
+  }
+}
+
+function serializedEnvelope(envelope) {
+  return Buffer.from(`${JSON.stringify(envelope, null, 2)}\n`);
+}
+
+function clearLegacyKeyCache() {
+  if (_cachedKey) _cachedKey.fill(0);
+  if (_cachedTrustMacKey) _cachedTrustMacKey.fill(0);
+  _cachedKey = null;
+  _cachedTrustMacKey = null;
+}
+
+/**
+ * One-way migration from Core-held AES custody to the signed host seam.
+ *
+ * Every output is prepared before mutation. Token/app/registry/marker writes
+ * happen under the existing store lock, and byte snapshots plus legacy-key
+ * custody snapshots are restored if any write, purge, or purge verification
+ * fails. The real host implementation is deliberately left to the native/XPC
+ * lane; this function only consumes the injected synchronous seam.
+ */
+function sealStore({ legacyKeyCustody = systemLegacyKeyCustody } = {}) {
+  if (sealedHostMarked()) {
+    return { sealed: false, alreadySealed: true, tokenCount: 0, oauthAppCount: 0 };
+  }
+  const hostDecryptor = requireHostDecryptor(['decrypt', 'seal', 'mac']);
+
+  return withStoreLock(() => {
+    if (sealedHostMarked()) {
+      return { sealed: false, alreadySealed: true, tokenCount: 0, oauthAppCount: 0 };
+    }
+    assertCredentialsNotTracked();
+
+    const registry = readRegistry();
+    for (const [connId, entry] of Object.entries(registry)) {
+      if (connId === '_defaults' || connId === '_meta' || !entry || !entry.service) continue;
+      if (entry.error === 'trust_unverified' || entry.error === 'encryption_key_lost') {
+        const error = new Error(`Credential store sealing refused an untrusted registry entry for ${connId}.`);
+        error.code = 'DEX_CM_SEAL_STORE_UNTRUSTED';
+        throw error;
+      }
+    }
+
+    const tokenFiles = listTokenFiles();
+    const tokenOutputs = new Map();
+    for (const file of tokenFiles) {
+      const parsed = parseConnectionId(
+        file.replace(/\.json$/, '').replace(/__/g, ':'),
+        { allowLegacyProviderCase: true }
+      );
+      const filePath = path.join(credentialsDir(), 'tokens', file);
+      const aad = `token:${parsed.connId}`;
+      const legacyEnvelope = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const plaintext = decrypt(legacyEnvelope, aad);
+      tokenOutputs.set(
+        filePath,
+        serializedEnvelope(sealViaHost(hostDecryptor, plaintext, aad))
+      );
+    }
+
+    const appsPath = oauthAppsPath();
+    const appsSnapshot = snapshotFileForSeal(appsPath);
+    let oauthAppCount = 0;
+    let sealedAppsBytes = null;
+    if (appsSnapshot.exists) {
+      const apps = JSON.parse(appsSnapshot.contents.toString('utf8'));
+      for (const [provider, app] of Object.entries(apps)) {
+        if (!app || !app.clientSecret) continue;
+        const aad = `oauth-app:${provider}`;
+        const plaintext = decrypt(app.clientSecret, aad);
+        app.clientSecret = sealViaHost(hostDecryptor, plaintext, aad);
+        oauthAppCount++;
+      }
+      sealedAppsBytes = Buffer.from(`${JSON.stringify(apps, null, 2)}\n`);
+    }
+
+    const registryPathname = registryPath();
+    const registrySnapshot = snapshotFileForSeal(registryPathname);
+    const markerPath = sealedMarkerPath();
+    const markerSnapshot = snapshotFileForSeal(markerPath);
+    const fileSnapshots = new Map([
+      ...[...tokenOutputs.keys()].map((file) => [file, snapshotFileForSeal(file)]),
+      [appsPath, appsSnapshot],
+      [registryPathname, registrySnapshot],
+      [markerPath, markerSnapshot],
+    ]);
+    const custodySnapshot = legacyKeyCustody.capture();
+
+    const sealedRegistry = JSON.parse(JSON.stringify(registry));
+    for (const [filePath, bytes] of tokenOutputs) {
+      const connId = path.basename(filePath, '.json').replace(/__/g, ':');
+      if (!sealedRegistry[connId] || !sealedRegistry[connId].service) {
+        throw new Error(`Credential store sealing could not match ${connId} to its registry entry.`);
+      }
+      sealedRegistry[connId].credentialDigest = crypto.createHash('sha256').update(bytes).digest('hex');
+      sealedRegistry[connId].mac = trustMacViaHost(
+        hostDecryptor,
+        registryMacPayload(connId, sealedRegistry[connId])
+      );
+    }
+    if (sealedRegistry._meta) {
+      sealedRegistry._meta.mac = trustMacViaHost(
+        hostDecryptor,
+        registryMetaPayload(sealedRegistry)
+      );
+    }
+    const sealedRegistryBytes = Buffer.from(`${JSON.stringify(sealedRegistry, null, 2)}\n`);
+
+    let mutated = false;
+    try {
+      mutated = true;
+      for (const [file, bytes] of tokenOutputs) {
+        writeFileAtomic(file, bytes, { mode: 0o600 });
+      }
+      if (sealedAppsBytes) writeFileAtomic(appsPath, sealedAppsBytes, { mode: 0o600 });
+      if (registrySnapshot.exists || hasServiceEntries(sealedRegistry)) {
+        writeFileAtomic(registryPathname, sealedRegistryBytes, { mode: 0o600 });
+      }
+      writeFileAtomic(
+        markerPath,
+        `${JSON.stringify({ v: 1, custody: 'sealed-host' })}\n`,
+        { mode: 0o600 }
+      );
+
+      legacyKeyCustody.purge(custodySnapshot);
+      if (!legacyKeyCustody.verifyPurged()) {
+        throw new Error('Legacy credential key material still exists after sealing.');
+      }
+    } catch (error) {
+      const rollbackErrors = [];
+      if (mutated) {
+        for (const [file, snapshot] of fileSnapshots) {
+          try {
+            restoreFileAfterSeal(file, snapshot);
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
+        }
+        try {
+          legacyKeyCustody.restore(custodySnapshot);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      clearLegacyKeyCache();
+      if (rollbackErrors.length) {
+        const rollbackFailure = new Error(
+          `Credential store sealing failed and rollback could not restore the prior state: ${rollbackErrors.map((item) => item.message).join('; ')}`
+        );
+        rollbackFailure.code = 'DEX_CM_SEAL_ROLLBACK_FAILED';
+        rollbackFailure.cause = error;
+        throw rollbackFailure;
+      }
+      throw error;
+    }
+
+    clearLegacyKeyCache();
+    return {
+      sealed: true,
+      alreadySealed: false,
+      tokenCount: tokenOutputs.size,
+      oauthAppCount,
+    };
+  });
 }
 
 // ---- Connection ids (multi-account) -----------------------------------------
@@ -706,13 +1094,21 @@ function quarantineFile(p, reason) {
  * keeps working.
  */
 function loadToken(id) {
+  const sealedHost = sealedHostMarked() ? requireHostDecryptor() : null;
   const connId = resolveConnId(id);
   const p = tokenPath(connId);
   if (!fs.existsSync(p)) return null;
   try {
     const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (sealedHost) {
+      if (envelope.aad !== `token:${connId}`) throw new EnvelopeBindingError();
+      return JSON.parse(sealedHost.decrypt(connId, envelope));
+    }
     return JSON.parse(decrypt(envelope, `token:${connId}`));
   } catch (err) {
+    // A host failure is not evidence that sealed ciphertext is corrupt. Keep the
+    // file untouched and surface the host's typed failure to the caller.
+    if (sealedHost) throw err;
     // Key loss is store-wide, not a damaged file: keep the (intact) token file
     // where it is and surface the explicit state to the caller instead.
     if (err && (err.code === 'DEX_CM_KEY_LOST' || err.code === 'DEX_CM_UNSAFE_CREDENTIAL_PATH')) throw err;
@@ -1204,6 +1600,9 @@ function nowIso() {
 
 module.exports = {
   credentialsDir,
+  sealedMarkerPath,
+  setHostDecryptor,
+  sealStore,
   keyCustodyMode,
   parseConnectionId,
   resolveConnId,
@@ -1231,6 +1630,7 @@ module.exports = {
   verifyLedgerRow,
   ledgerRowMatchesCurrentCredential,
   KeyLossError,
+  SealedHostRequiredError,
   EnvelopeBindingError,
   recoverFromKeyLoss,
 };

@@ -11,8 +11,8 @@
         "connection-manager"
       ],
       "fileCount": 21,
-      "totalBytes": 233211,
-      "treeHash": "f59bf17c7aa624318939e6ede3309d6ed15f30c9dff190c62804527a7cfa5f26",
+      "totalBytes": 247582,
+      "treeHash": "a5f2e2f1a9d7ef947ac398946d1b1ea646b9e03f8ff06cbe12907ee66d13fec7",
       "files": [
         {
           "path": "auth-context.cjs",
@@ -36,13 +36,13 @@
         },
         {
           "path": "connect.cjs",
-          "bytes": 29599,
-          "sha256": "ca86c82c154122392ec9cbd0c607edc2230f4b4ef8b4989cef6e04ed567a3284"
+          "bytes": 29717,
+          "sha256": "39083ad8efb5985c5401f9270971f90a5cdfa1f83dfe0d830b7320e49f1b28b6"
         },
         {
           "path": "contract.cjs",
-          "bytes": 9429,
-          "sha256": "8a313c5e817f723dd2e98e6eb76ba615fb64903f8769a847cd35c85dd75e51c3"
+          "bytes": 9526,
+          "sha256": "71805b045f0e031b8a7f5356e53d6934a19ff056fa316af243b24bc820c4437e"
         },
         {
           "path": "dex-call.cjs",
@@ -116,8 +116,8 @@
         },
         {
           "path": "token-store.cjs",
-          "bytes": 47006,
-          "sha256": "30877cdcb1f7b16124974b88af7c170402eb07cc2cfd784e3b45a33af351764f"
+          "bytes": 61162,
+          "sha256": "a05c1bef0087edf038fca04926131a2b0a115d4f87b68a694135a776d3c7959c"
         }
       ]
     }

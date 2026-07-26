@@ -16,5 +16,6 @@
       "lastProbeAt": null
     }
   ],
-  "registryNotice": null
+  "registryNotice": null,
+  "keyCustody": "keychain"
 }

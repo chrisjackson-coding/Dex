@@ -190,6 +190,13 @@
         },
         "registryNotice": {
           "$ref": "#/$defs/registryNotice"
+        },
+        "keyCustody": {
+          "enum": [
+            "keychain",
+            "file",
+            "sealed-host"
+          ]
         }
       }
     },

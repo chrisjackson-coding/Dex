@@ -199,6 +199,7 @@ function buildConnectionsSchema() {
         properties: {
           connections: { type: 'array', items: { $ref: '#/$defs/statusRow' } },
           registryNotice: { $ref: '#/$defs/registryNotice' },
+          keyCustody: { enum: ['keychain', 'file', 'sealed-host'] },
         },
       },
       tokenEnvelopeV2: {
@@ -236,6 +237,7 @@ function fixtureStatus(status) {
       lastProbeAt: status === 'connected' ? '2030-01-01T00:01:00.000Z' : null,
     }],
     registryNotice: null,
+    keyCustody: 'keychain',
   };
 }
 

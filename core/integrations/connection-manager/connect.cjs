@@ -404,7 +404,7 @@ function cmdStatus(flags = {}) {
   const rows = health.allConnectionsHealth();
   const keyCustody = store.keyCustodyMode();
   if (flags.json !== undefined) {
-    process.stdout.write(`${JSON.stringify({ connections: rows, registryNotice: meta || null })}\n`);
+    process.stdout.write(`${JSON.stringify({ connections: rows, registryNotice: meta || null, keyCustody })}\n`);
     return;
   }
   if (meta && meta.notice === 'registry_rebuilt') {
@@ -416,7 +416,9 @@ function cmdStatus(flags = {}) {
     );
   }
   console.log(
-    keyCustody === 'keychain'
+    keyCustody === 'sealed-host'
+      ? 'Encryption key: sealed inside the signed Dex desktop host.'
+      : keyCustody === 'keychain'
       ? 'Encryption key: stored in your macOS Keychain.'
       : 'Encryption key: stored in your vault folder — anyone with a copy of that folder can read these credentials.'
   );
