@@ -126,6 +126,142 @@ def test_build_journey_marks_an_enabled_pack_skill_as_available(tmp_path: Path, 
     ]
 
 
+def test_build_journey_buckets_shipped_skills_across_dex_territories(
+    tmp_path: Path, monkeypatch
+) -> None:
+    journey = _journey()
+    vault = tmp_path / "vault"
+    skill_ids = (
+        "daily-plan",
+        "meeting-prep",
+        "project-health",
+        "career-coach",
+        "calendar-setup",
+        "dex-add-mcp",
+        "diff-generate",
+        "dex-dashboard",
+        "anthropic-pdf",
+        "industry-truths",
+    )
+    for skill_id in skill_ids:
+        _write(vault / f".claude/skills/{skill_id}/SKILL.md", "---\n---\n")
+    _fake_rooms(monkeypatch, journey)
+
+    result = journey.build_journey(vault, {})
+
+    groups_by_skill = {
+        skill["id"]: group["name"]
+        for group in result["groups"]
+        for skill in group["skills"]
+    }
+    assert groups_by_skill == {
+        "daily-plan": "Plan & Review",
+        "meeting-prep": "Meetings & People",
+        "project-health": "Projects & Work",
+        "career-coach": "Career",
+        "calendar-setup": "Connect & Import",
+        "dex-add-mcp": "Connect & Import",
+        "diff-generate": "Sharing",
+        "dex-dashboard": "Dex itself",
+        "anthropic-pdf": "More",
+        "industry-truths": "More",
+    }
+
+
+def test_build_journey_puts_unmapped_uncategorized_skills_in_yours(tmp_path: Path, monkeypatch) -> None:
+    journey = _journey()
+    vault = tmp_path / "vault"
+    _write(vault / ".claude/skills/my-private-workflow/SKILL.md", "---\n---\n")
+    _fake_rooms(monkeypatch, journey)
+
+    result = journey.build_journey(vault, {})
+
+    assert result["groups"] == [
+        {
+            "id": "yours",
+            "name": "Yours",
+            "yours": True,
+            "skills": [
+                {
+                    "id": "my-private-workflow",
+                    "name": "My Private Workflow",
+                    "description": "",
+                    "state": "unused",
+                }
+            ],
+        }
+    ]
+
+
+def test_build_journey_orders_territories_and_skills_by_relevance(tmp_path: Path, monkeypatch) -> None:
+    journey = _journey()
+    vault = tmp_path / "vault"
+    for skill_id in (
+        "daily-plan",
+        "daily-review",
+        "meeting-prep",
+        "project-health",
+        "career-coach",
+        "calendar-setup",
+        "diff-list",
+        "dex-dashboard",
+        "anthropic-pdf",
+        "my-private-workflow",
+    ):
+        _write(vault / f".claude/skills/{skill_id}/SKILL.md", "---\n---\n")
+    _fake_rooms(monkeypatch, journey)
+
+    result = journey.build_journey(
+        vault,
+        {"skills": {"used": ["daily-plan", "daily-review"]}},
+    )
+
+    assert [group["id"] for group in result["groups"]] == [
+        "plan-review",
+        "meetings-people",
+        "projects-work",
+        "career",
+        "connect-import",
+        "sharing",
+        "dex-itself",
+        "more",
+        "yours",
+    ]
+    assert [skill["id"] for skill in result["groups"][0]["skills"]] == [
+        "daily-plan",
+        "daily-review",
+    ]
+
+
+def test_build_journey_keeps_frontmatter_category_over_built_in_bucket(
+    tmp_path: Path, monkeypatch
+) -> None:
+    journey = _journey()
+    vault = tmp_path / "vault"
+    _write(
+        vault / ".claude/skills/daily-plan/SKILL.md",
+        "---\ncategory: Personal rituals\n---\n",
+    )
+    _fake_rooms(monkeypatch, journey)
+
+    result = journey.build_journey(vault, {})
+
+    assert result["groups"] == [
+        {
+            "id": "personal-rituals",
+            "name": "Personal rituals",
+            "skills": [
+                {
+                    "id": "daily-plan",
+                    "name": "Daily Plan",
+                    "description": "",
+                    "state": "unused",
+                }
+            ],
+        }
+    ]
+
+
 def test_render_journey_uses_nightfall_states_and_escapes_skill_data() -> None:
     section = _section()
 

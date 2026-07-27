@@ -413,6 +413,132 @@ def test_settings_section_escapes_data_and_returns_interactive_javascript() -> N
     assert "</script>" not in script
 
 
+def test_run_server_prints_the_tokened_url_once_and_flushes_before_opening_browser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _server()
+    vault, page = _vault(tmp_path)
+
+    class RecordingStdout:
+        def __init__(self) -> None:
+            self.text = ""
+            self.flush_count = 0
+
+        def write(self, text: str) -> int:
+            self.text += text
+            return len(text)
+
+        def flush(self) -> None:
+            self.flush_count += 1
+
+    class ImmediateServer:
+        instance: "ImmediateServer"
+
+        def __init__(self, _address, _handler) -> None:
+            self.server_address = ("127.0.0.1", 43123)
+            self.timeout = None
+            self.handled_requests = 0
+            self.closed = False
+            type(self).instance = self
+
+        def handle_request(self) -> None:
+            self.handled_requests += 1
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    stdout = RecordingStdout()
+    monkeypatch.setattr(server.sys, "stdout", stdout)
+    opened: list[str] = []
+
+    def browser_open(url: str) -> bool:
+        assert stdout.text == f"Dashboard: {url}\n"
+        assert stdout.flush_count >= 1
+        opened.append(url)
+        return True
+
+    result = server.run_server(
+        vault=vault,
+        html_path=page,
+        idle_timeout=0.01,
+        token="demo-token",
+        server_class=ImmediateServer,
+        browser_open=browser_open,
+    )
+
+    expected_url = "http://127.0.0.1:43123/?t=demo-token"
+    assert result["reason"] == "idle"
+    assert opened == [expected_url]
+    assert stdout.text == f"Dashboard: {expected_url}\n"
+    assert stdout.text.count(expected_url) == 1
+    assert ImmediateServer.instance.handled_requests > 0
+    assert ImmediateServer.instance.closed
+
+
+def test_run_server_keeps_serving_when_injected_browser_open_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    server = _server()
+    vault, page = _vault(tmp_path)
+
+    class ImmediateServer:
+        instance: "ImmediateServer"
+
+        def __init__(self, _address, _handler) -> None:
+            self.server_address = ("127.0.0.1", 43124)
+            self.timeout = None
+            self.handled_requests = 0
+            self.closed = False
+            type(self).instance = self
+
+        def handle_request(self) -> None:
+            self.handled_requests += 1
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    result = server.run_server(
+        vault=vault,
+        html_path=page,
+        idle_timeout=0.01,
+        token="demo-token",
+        server_class=ImmediateServer,
+        browser_open=lambda _url: False,
+    )
+
+    expected_url = "http://127.0.0.1:43124/?t=demo-token"
+    assert result["reason"] == "idle"
+    assert capsys.readouterr().out == (
+        f"Dashboard: {expected_url}\n"
+        "Could not open a browser — paste the URL above into Chrome.\n"
+    )
+    assert ImmediateServer.instance.handled_requests > 0
+    assert ImmediateServer.instance.closed
+
+
+def test_default_browser_open_uses_macos_open_after_webbrowser_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _server()
+    calls: list[tuple[object, ...]] = []
+
+    class CompletedProcess:
+        returncode = 0
+
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    monkeypatch.setattr(server.webbrowser, "open", lambda _url: False)
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *args, **kwargs: (calls.append((*args, kwargs)), CompletedProcess())[1],
+    )
+
+    assert server._default_browser_open("http://127.0.0.1:43123/?t=demo-token")
+    assert calls == [(["open", "http://127.0.0.1:43123/?t=demo-token"], {"check": False})]
+
+
 @pytest.mark.socket_smoke
 @pytest.mark.skipif(
     os.environ.get("DEX_SOCKET_SMOKE") != "1",

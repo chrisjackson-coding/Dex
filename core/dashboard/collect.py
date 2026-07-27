@@ -27,17 +27,20 @@ from core.paths import (
     COMPANIES_DIR,
     COMPANY_INDEX_FILE,
     INTEGRATION_CONFIG_FILE,
+    MCP_CONFIG_TARGET,
     MEETING_CACHE_FILE,
     MEETINGS_DIR,
     PEOPLE_DIR,
     PEOPLE_INDEX_FILE,
     PILLARS_FILE,
     PROJECTS_DIR,
+    QUARTER_GOALS_FILE,
     SKILL_RATINGS_FILE,
     SYSTEM_DIR,
     TASKS_FILE,
     USER_PROFILE_FILE,
     VAULT_ROOT,
+    WEEK_PRIORITIES_FILE,
 )
 
 COLLECTOR_VERSION = "1"
@@ -47,6 +50,45 @@ TASK_DONE = re.compile(r"^\s*-\s+\[[xX]\]", re.MULTILINE)
 COMPLETION_STAMP = re.compile(r"✅\s*(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}")
 DATE_FRAGMENT = re.compile(r"(?<!\d)(\d{4})[-_](\d{2})[-_](\d{2})(?!\d)")
 SKILL_COMMAND = re.compile(r"/([a-z0-9][a-z0-9-]*)", re.IGNORECASE)
+GRANOLA_ENV_LINE = re.compile(r"^\s*(?:export\s+)?GRANOLA_API_KEY\s*=")
+EVENT_SUFFIXES = ("_completed", "_viewed", "_started", "_rated")
+EVENT_SKILL_NAMES = {
+    "daily_plan": "daily-plan",
+    "daily_review": "daily-review",
+    "week_plan": "week-plan",
+    "week_review": "week-review",
+    "quarter_plan": "quarter-plan",
+    "quarter_review": "quarter-review",
+    "meeting_prep": "meeting-prep",
+    "process_meetings": "process-meetings",
+    "whats_new": "dex-whats-new",
+    "level_up": "dex-level-up",
+    "career_coach": "career-coach",
+}
+QUARTER_GOALS_BLANK_TEMPLATE = (
+    "# Quarter Goals\n\n"
+    "This file is provisioned only when the Quarter Goals room is enabled."
+)
+WEEK_PRIORITIES_TEMPLATE_PROSE = {
+    "The most important outcomes for this week. Everything else is secondary.",
+    "How does this week's work align to your strategic pillars?",
+    "Tasks from last week that still need attention:",
+}
+WEEK_PRIORITIES_TEMPLATE_TABLE_CELLS = {
+    "balance",
+    "day",
+    "fri",
+    "meeting",
+    "mon",
+    "pillar",
+    "prep needed",
+    "tasks/focus",
+    "thu",
+    "time",
+    "tue",
+    "wed",
+    "⬜",
+}
 
 
 def _short_error(error: Exception) -> str:
@@ -227,6 +269,75 @@ def _collect_integrations(vault: Path) -> dict[str, Any]:
     }
 
 
+def _mcp_server_names(vault: Path) -> tuple[list[str], bool]:
+    path = _at(vault, MCP_CONFIG_TARGET)
+    if not path.is_file():
+        return [], False
+    try:
+        config = _read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return [], False
+    servers = _mapping(_mapping(config).get("mcpServers"))
+    names = sorted(
+        name
+        for raw_name in servers
+        if (name := str(raw_name).strip())
+    )
+    return names, True
+
+
+def _env_file_has_granola_key(vault: Path) -> bool:
+    path = vault / ".env"
+    if not path.is_file():
+        return False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return any(
+                GRANOLA_ENV_LINE.match(line) is not None
+                for line in handle
+                if not line.lstrip().startswith("#")
+            )
+    except OSError:
+        return False
+
+
+def _collect_connections(vault: Path, integrations: Any) -> dict[str, Any]:
+    sources: list[str] = []
+    dex_integrations_on = 0
+    config_path = _at(vault, INTEGRATION_CONFIG_FILE)
+    if (
+        config_path.is_file()
+        and isinstance(integrations, dict)
+        and "error" not in integrations
+        and isinstance(integrations.get("enabled_count"), int)
+    ):
+        dex_integrations_on = integrations["enabled_count"]
+        sources.append("integrations config")
+
+    mcp_servers, mcp_readable = _mcp_server_names(vault)
+    if mcp_readable:
+        sources.append(".mcp.json")
+
+    granola_key_present = (
+        "GRANOLA_API_KEY" in os.environ
+        or _env_file_has_granola_key(vault)
+    )
+    sources.append("environment")
+    mcp_count = len(mcp_servers)
+    return {
+        "mcp_servers": mcp_servers,
+        "mcp_count": mcp_count,
+        "dex_integrations_on": dex_integrations_on,
+        "granola_key_present": granola_key_present,
+        "total_connected": (
+            mcp_count
+            + dex_integrations_on
+            + int(granola_key_present)
+        ),
+        "sources": sources,
+    }
+
+
 @contextmanager
 def _vault_environment(vault: Path) -> Iterator[None]:
     previous = os.environ.get("VAULT_PATH")
@@ -279,16 +390,29 @@ def _week_labels(now: datetime) -> list[str]:
     return labels
 
 
+def _normalize_skill_reference(value: str) -> str:
+    return value.strip().lower().lstrip("/").replace("_", "-")
+
+
+def _event_skill_name(value: str) -> str:
+    normalized = value.strip().lower().lstrip("/").replace("-", "_")
+    for suffix in EVENT_SUFFIXES:
+        if normalized.endswith(suffix):
+            normalized = normalized.removesuffix(suffix)
+            break
+    return EVENT_SKILL_NAMES.get(normalized, normalized.replace("_", "-"))
+
+
 def _event_skill_names(entry: dict[str, Any]) -> set[str]:
     names = set()
     event = entry.get("event") or entry.get("event_name")
     if isinstance(event, str):
-        names.add(event.strip().lower().replace("_", "-"))
+        names.add(_event_skill_name(event))
     properties = _mapping(entry.get("properties"))
     for key in ("skill_name", "skill"):
         value = properties.get(key)
         if isinstance(value, str):
-            names.add(value.strip().lower().lstrip("/").replace("_", "-"))
+            names.add(_normalize_skill_reference(value))
     return {name for name in names if name}
 
 
@@ -377,7 +501,25 @@ def _markdown_files(root: Path) -> list[Path]:
     )
 
 
+def _people_from_filesystem(vault: Path, source: str) -> dict[str, Any]:
+    root = _at(vault, PEOPLE_DIR)
+    files = _markdown_files(root)
+    internal = 0
+    external = 0
+    for path in files:
+        parts = {part.casefold() for part in path.relative_to(root).parts}
+        internal += "internal" in parts
+        external += "external" in parts
+    return {
+        "total": len(files),
+        "internal": internal,
+        "external": external,
+        "source": source,
+    }
+
+
 def _collect_people(vault: Path) -> dict[str, Any]:
+    filesystem = _people_from_filesystem(vault, "filesystem")
     index_path = _at(vault, PEOPLE_INDEX_FILE)
     if index_path.is_file():
         try:
@@ -385,6 +527,9 @@ def _collect_people(vault: Path) -> dict[str, Any]:
             people = index.get("people", []) if isinstance(index, dict) else []
             total = index.get("total") if isinstance(index, dict) else None
             if isinstance(total, int) and total >= 0 and isinstance(people, list):
+                if filesystem["total"] > total:
+                    filesystem["source"] = "filesystem (index stale)"
+                    return filesystem
                 internal = 0
                 external = 0
                 for person in people:
@@ -400,20 +545,7 @@ def _collect_people(vault: Path) -> dict[str, Any]:
                 }
         except (OSError, json.JSONDecodeError):
             pass
-    root = _at(vault, PEOPLE_DIR)
-    files = _markdown_files(root)
-    internal = 0
-    external = 0
-    for path in files:
-        parts = {part.casefold() for part in path.relative_to(root).parts}
-        internal += "internal" in parts
-        external += "external" in parts
-    return {
-        "total": len(files),
-        "internal": internal,
-        "external": external,
-        "source": "filesystem",
-    }
+    return filesystem
 
 
 def _collect_companies(vault: Path) -> dict[str, Any]:
@@ -574,6 +706,155 @@ def _collect_ratings(vault: Path) -> dict[str, dict[str, float | int]]:
     }
 
 
+def _ritual_usage_evidence(
+    skill_name: str,
+    usage: Any,
+    analytics: Any,
+) -> dict[str, bool | str]:
+    if isinstance(usage, dict):
+        for feature, used in _mapping(usage.get("features")).items():
+            if not used:
+                continue
+            commands = {
+                _normalize_skill_reference(command)
+                for command in SKILL_COMMAND.findall(str(feature))
+            }
+            if skill_name in commands:
+                return {
+                    "used": True,
+                    "evidence": f"usage_log.md marks /{skill_name} used",
+                }
+    if isinstance(analytics, dict):
+        for event_name, count in _mapping(analytics.get("by_event")).items():
+            if (
+                isinstance(event_name, str)
+                and isinstance(count, int)
+                and count > 0
+                and _event_skill_name(event_name) == skill_name
+            ):
+                return {
+                    "used": True,
+                    "evidence": f"analytics event {event_name}",
+                }
+        used_names = {
+            _normalize_skill_reference(name)
+            for name in analytics.get("skill_names_used", [])
+            if isinstance(name, str)
+        }
+        if skill_name in used_names:
+            return {
+                "used": True,
+                "evidence": f"analytics recorded /{skill_name}",
+            }
+    return {
+        "used": False,
+        "evidence": "no usage or analytics event found",
+    }
+
+
+def _normalized_markdown(content: str) -> str:
+    return "\n".join(line.rstrip() for line in content.splitlines()).strip()
+
+
+def _quarter_goals_set(vault: Path) -> bool:
+    path = _at(vault, QUARTER_GOALS_FILE)
+    if not path.is_file():
+        return False
+    content = _normalized_markdown(
+        path.read_text(encoding="utf-8", errors="replace")
+    )
+    return content not in {
+        "",
+        "# Quarter Goals",
+        QUARTER_GOALS_BLANK_TEMPLATE,
+    }
+
+
+def _table_has_week_priority_content(line: str) -> bool:
+    cells = [
+        cell.strip()
+        for cell in line.strip("|").split("|")
+        if cell.strip()
+    ]
+    for cell in cells:
+        lowered = cell.casefold()
+        if re.fullmatch(r":?-{2,}:?", cell):
+            continue
+        if lowered in WEEK_PRIORITIES_TEMPLATE_TABLE_CELLS:
+            continue
+        if re.fullmatch(r"pillar\s+\d+", lowered):
+            continue
+        return True
+    return False
+
+
+def _week_priorities_set(vault: Path) -> bool:
+    path = _at(vault, WEEK_PRIORITIES_FILE)
+    if not path.is_file():
+        return False
+    content = path.read_text(encoding="utf-8", errors="replace")
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line == "---":
+            continue
+        if line.startswith("**Week of:**"):
+            week = line.partition(":")[2].strip("* ")
+            if week and "{{" not in week and "[" not in week:
+                return True
+            continue
+        numbered = re.fullmatch(r"\d+\.\s*(.*)", line)
+        if numbered is not None:
+            if numbered.group(1).strip():
+                return True
+            continue
+        checkbox = re.fullmatch(r"-\s+\[[ xX]\]\s*(.*)", line)
+        if checkbox is not None:
+            if checkbox.group(1).strip():
+                return True
+            continue
+        bullet = re.fullmatch(r"-\s*(.*)", line)
+        if bullet is not None:
+            if bullet.group(1).strip():
+                return True
+            continue
+        if line.startswith("|"):
+            if _table_has_week_priority_content(line):
+                return True
+            continue
+        if line.startswith("*") and line.endswith("*"):
+            continue
+        if line in WEEK_PRIORITIES_TEMPLATE_PROSE:
+            continue
+        return True
+    return False
+
+
+def _collect_rituals(vault: Path, usage: Any, analytics: Any) -> dict[str, Any]:
+    quarter_goals_set = _quarter_goals_set(vault)
+    week_priorities_set = _week_priorities_set(vault)
+    return {
+        "daily_plan": _ritual_usage_evidence("daily-plan", usage, analytics),
+        "week_plan": _ritual_usage_evidence("week-plan", usage, analytics),
+        "week_review": _ritual_usage_evidence("week-review", usage, analytics),
+        "quarter_goals": {
+            "set": quarter_goals_set,
+            "evidence": (
+                "Quarter_Goals.md differs from blank template"
+                if quarter_goals_set
+                else "Quarter_Goals.md is missing or still blank"
+            ),
+        },
+        "week_priorities": {
+            "set": week_priorities_set,
+            "evidence": (
+                "Week_Priorities.md contains priorities"
+                if week_priorities_set
+                else "Week_Priorities.md has no priorities"
+            ),
+        },
+    }
+
+
 def _collect_skills(
     vault: Path,
     skills_list: Path | None,
@@ -582,6 +863,7 @@ def _collect_skills(
 ) -> dict[str, Any]:
     available = _load_skills_list(skills_list)
     detected: set[str] = set()
+    ratings = _collect_ratings(vault)
     if isinstance(usage, dict):
         for feature, used in _mapping(usage.get("features")).items():
             if not used:
@@ -589,10 +871,11 @@ def _collect_skills(
             detected.update(command.lower() for command in SKILL_COMMAND.findall(str(feature)))
     if isinstance(analytics, dict):
         detected.update(
-            str(name).lower().lstrip("/").replace("_", "-")
+            _normalize_skill_reference(name)
             for name in analytics.get("skill_names_used", [])
             if isinstance(name, str)
         )
+    detected.update(_normalize_skill_reference(name) for name in ratings)
     if available:
         used = sorted(set(available).intersection(detected))
     else:
@@ -601,7 +884,7 @@ def _collect_skills(
         "available": available,
         "used": used,
         "unused": sorted(set(available) - set(used)),
-        "ratings": _collect_ratings(vault),
+        "ratings": ratings,
     }
 
 
@@ -645,6 +928,7 @@ def collect_dashboard(
     vault_path = Path(vault).expanduser().resolve()
     generated = (now or _utc_now()).astimezone(timezone.utc)
     skills_path = Path(skills_list).expanduser().resolve() if skills_list is not None else None
+    integrations = _safe(lambda: _collect_integrations(vault_path))
     usage = _safe(lambda: _collect_usage(vault_path))
     analytics = _safe(lambda: _collect_analytics(vault_path, generated))
     return {
@@ -656,7 +940,9 @@ def collect_dashboard(
         },
         "profile": _safe(lambda: _collect_profile(vault_path)),
         "pillars": _safe(lambda: _collect_pillars(vault_path)),
-        "integrations": _safe(lambda: _collect_integrations(vault_path)),
+        "integrations": integrations,
+        "connections": _safe(lambda: _collect_connections(vault_path, integrations)),
+        "rituals": _safe(lambda: _collect_rituals(vault_path, usage, analytics)),
         "usage": usage,
         "analytics": analytics,
         "tasks": _safe(lambda: _collect_tasks(vault_path, generated)),

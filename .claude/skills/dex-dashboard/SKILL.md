@@ -31,6 +31,16 @@ then read the whole object before writing anything about the user's Dex.
 
 ## 2. Author the session-owned content
 
+### Check the planning ladder FIRST
+
+Before writing anything, read the collected `rituals` section (daily plan, week plan,
+quarter goals, week priorities). Gaps in Dex's planning ladder outrank every other
+observation: a user who has never run a weekly plan or set quarter goals should hear
+that — warmly, with the evidence — before anything about meetings or tasks. If a ritual
+gap exists, at least one observation must name it, and the next-step suggestion should
+usually come from the ladder (e.g. a first `/week-plan`) unless something else is
+clearly more urgent.
+
 ### Dashboard Observation Quality Bar
 
 Write normally 2–3 short observation paragraphs, and fewer or none when the evidence is

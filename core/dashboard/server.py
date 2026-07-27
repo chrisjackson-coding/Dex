@@ -7,6 +7,7 @@ import argparse
 import hmac
 import json
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -78,6 +79,21 @@ def _inline_script_text(value: str) -> str:
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
     )
+
+
+def _default_browser_open(url: str) -> bool:
+    """Open a browser, with macOS's native launcher as a fallback."""
+    try:
+        if webbrowser.open(url):
+            return True
+    except (OSError, webbrowser.Error):
+        pass
+    if sys.platform != "darwin":
+        return False
+    try:
+        return subprocess.run(["open", url], check=False).returncode == 0
+    except OSError:
+        return False
 
 
 class ToggleSession:
@@ -291,7 +307,7 @@ def run_server(
     open_browser: bool = True,
     token: str | None = None,
     server_class: type[ThreadingHTTPServer] = ThreadingHTTPServer,
-    browser_open: Callable[[str], Any] = webbrowser.open,
+    browser_open: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     """Bind loopback, serve until close/idle/SIGINT, and never daemonize."""
     if idle_timeout <= 0:
@@ -312,8 +328,14 @@ def run_server(
     url = f"http://127.0.0.1:{application.port}/?t={quote(run_token, safe='')}"
     reason = "idle"
     try:
+        print(f"Dashboard: {url}", flush=True)
         if open_browser:
-            browser_open(url)
+            try:
+                opened = (browser_open or _default_browser_open)(url)
+            except Exception:
+                opened = False
+            if not opened:
+                print("Could not open a browser — paste the URL above into Chrome.")
         while True:
             if application.close_requested.is_set():
                 reason = "close"

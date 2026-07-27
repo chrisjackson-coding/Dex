@@ -14,6 +14,105 @@ SKILL_FILE = "SKILL.md"
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 _SKILL_COMMAND = re.compile(r"/([a-z0-9][a-z0-9_-]*)", re.IGNORECASE)
 _SENTENCE = re.compile(r"^(.+?[.!?])(?:\s|$)")
+_GROUP_ID_SEPARATOR = re.compile(r"[^a-z0-9]+")
+
+_GROUP_SEQUENCE = (
+    "Plan & Review",
+    "Meetings & People",
+    "Projects & Work",
+    "Career",
+    "Connect & Import",
+    "Sharing",
+    "Dex itself",
+    "More",
+    "Yours",
+)
+_GROUP_RANK = {name.casefold(): position for position, name in enumerate(_GROUP_SEQUENCE)}
+
+# The direct .claude/skills catalog shipped by Dex. Keep every shipped skill here so a
+# real vault is organized by Dex's own intent rather than its optional frontmatter.
+BUILT_IN_SKILL_CATEGORIES = {
+    "daily-plan": "Plan & Review",
+    "daily-review": "Plan & Review",
+    "identity-snapshot": "Plan & Review",
+    "journal": "Plan & Review",
+    "quarter-plan": "Plan & Review",
+    "quarter-review": "Plan & Review",
+    "review": "Plan & Review",
+    "triage": "Plan & Review",
+    "week-plan": "Plan & Review",
+    "week-review": "Plan & Review",
+    "weekly-reflection": "Plan & Review",
+    "commitments": "Meetings & People",
+    "meeting-closeout": "Meetings & People",
+    "meeting-prep": "Meetings & People",
+    "process-meetings": "Meetings & People",
+    "relationship-radar": "Meetings & People",
+    "decision-log": "Projects & Work",
+    "delegate-check": "Projects & Work",
+    "initiative-kickoff": "Projects & Work",
+    "product-brief": "Projects & Work",
+    "project-health": "Projects & Work",
+    "career-coach": "Career",
+    "resume-builder": "Career",
+    "atlassian-setup": "Connect & Import",
+    "calendar-setup": "Connect & Import",
+    "create-mcp": "Connect & Import",
+    "dex-add-mcp": "Connect & Import",
+    "dex-obsidian-setup": "Connect & Import",
+    "enable-semantic-search": "Connect & Import",
+    "google-workspace-setup": "Connect & Import",
+    "granola-setup": "Connect & Import",
+    "integrate-mcp": "Connect & Import",
+    "integrations": "Connect & Import",
+    "ms-teams-setup": "Connect & Import",
+    "scrape": "Connect & Import",
+    "setup": "Connect & Import",
+    "things-setup": "Connect & Import",
+    "todoist-setup": "Connect & Import",
+    "trello-setup": "Connect & Import",
+    "zoom-setup": "Connect & Import",
+    "diff-adopt": "Sharing",
+    "diff-adopt-profile": "Sharing",
+    "diff-generate": "Sharing",
+    "diff-list": "Sharing",
+    "diff-profile": "Sharing",
+    "diff-remove": "Sharing",
+    "create-skill": "Dex itself",
+    "dex-backlog": "Dex itself",
+    "dex-dashboard": "Dex itself",
+    "dex-doctor": "Dex itself",
+    "dex-improve": "Dex itself",
+    "dex-level-up": "Dex itself",
+    "dex-orient": "Dex itself",
+    "dex-rollback": "Dex itself",
+    "dex-update": "Dex itself",
+    "dex-whats-new": "Dex itself",
+    "getting-started": "Dex itself",
+    "manage-capabilities": "Dex itself",
+    "prompt-improver": "Dex itself",
+    "reset": "Dex itself",
+    "save-insight": "Dex itself",
+    "skill-score": "Dex itself",
+    "xray": "Dex itself",
+    "anthropic-algorithmic-art": "More",
+    "anthropic-brand-guidelines": "More",
+    "anthropic-canvas-design": "More",
+    "anthropic-doc-coauthoring": "More",
+    "anthropic-docx": "More",
+    "anthropic-frontend-design": "More",
+    "anthropic-internal-comms": "More",
+    "anthropic-mcp-builder": "More",
+    "anthropic-pdf": "More",
+    "anthropic-pptx": "More",
+    "anthropic-skill-creator": "More",
+    "anthropic-slack-gif-creator": "More",
+    "anthropic-theme-factory": "More",
+    "anthropic-web-artifacts-builder": "More",
+    "anthropic-webapp-testing": "More",
+    "anthropic-xlsx": "More",
+    "industry-truths": "More",
+}
 
 
 def _at(vault: Path, configured_path: Path) -> Path:
@@ -78,7 +177,7 @@ def _catalog_entry(path: Path, skill_id: str) -> dict[str, str]:
         "id": skill_id,
         "name": _display_name(skill_id, metadata),
         "description": _first_sentence(metadata.get("description", "")),
-        "category": metadata.get("category", "").strip() or "Other",
+        "category": metadata.get("category", "").strip(),
     }
 
 
@@ -162,8 +261,31 @@ def _room_states(vault: Path) -> list[dict[str, Any]]:
     return states
 
 
-def _group_name(category: str) -> str:
-    return category.strip() or "Other"
+def _built_in_category(skill_id: str) -> str:
+    if skill_id.startswith("career-"):
+        return "Career"
+    return BUILT_IN_SKILL_CATEGORIES.get(skill_id, "")
+
+
+def _group_name(skill_id: str, category: str) -> str:
+    return category.strip() or _built_in_category(skill_id) or "Yours"
+
+
+def _group_id(category: str) -> str:
+    candidate = _GROUP_ID_SEPARATOR.sub("-", category.casefold()).strip("-")
+    return candidate if _SKILL_ID.fullmatch(candidate) else "other"
+
+
+def _group_sort_key(group: dict[str, Any]) -> tuple[int, int | str]:
+    name = str(group.get("name") or "")
+    rank = _GROUP_RANK.get(name.casefold())
+    if rank is not None and rank < _GROUP_RANK["more"]:
+        return (0, rank)
+    if rank == _GROUP_RANK["more"]:
+        return (2, rank)
+    if rank == _GROUP_RANK["yours"]:
+        return (3, rank)
+    return (1, name.casefold())
 
 
 def build_journey(vault: Path, data: dict) -> dict:
@@ -181,8 +303,6 @@ def build_journey(vault: Path, data: dict) -> dict:
             if skill_id in catalog:
                 continue
             entry = _catalog_entry(skill_path, skill_id)
-            if entry["category"] == "Other":
-                entry["category"] = room.replace("_", " ").title()
             catalog[skill_id] = entry
             packed_states[skill_id] = room_enabled
 
@@ -190,12 +310,14 @@ def build_journey(vault: Path, data: dict) -> dict:
     for skill_id, entry in sorted(catalog.items()):
         available = packed_states.get(skill_id, True)
         state = "available-in-pack" if not available else ("used" if skill_id in used else "unused")
-        category = _group_name(entry["category"])
+        category = _group_name(skill_id, entry["category"])
         key = category.casefold()
         group = grouped.setdefault(
             key,
-            {"id": _skill_id(category) or "other", "name": category, "skills": []},
+            {"id": _group_id(category), "name": category, "skills": []},
         )
+        if key == "yours":
+            group["yours"] = True
         group["skills"].append(
             {
                 "id": skill_id,
@@ -205,9 +327,16 @@ def build_journey(vault: Path, data: dict) -> dict:
             }
         )
 
-    groups = [grouped[key] for key in sorted(grouped)]
+    groups = sorted(grouped.values(), key=_group_sort_key)
     for group in groups:
-        group["skills"].sort(key=lambda skill: (skill["name"].casefold(), skill["id"]))
+        group["skills"].sort(
+            key=lambda skill: (
+                skill["state"] != "used",
+                skill["state"] == "available-in-pack",
+                skill["name"].casefold(),
+                skill["id"],
+            )
+        )
     skills = [skill for group in groups for skill in group["skills"]]
     return {
         "groups": groups,
