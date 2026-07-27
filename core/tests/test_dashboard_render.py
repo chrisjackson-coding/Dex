@@ -148,7 +148,7 @@ def _history_data() -> dict:
     }
 
 
-def test_html_is_self_contained_composed_and_escapes_user_data() -> None:
+def test_html_is_self_contained_heydex_styled_and_escapes_user_data() -> None:
     render = _renderer()
 
     page = render.render_dashboard_html(
@@ -159,9 +159,12 @@ def test_html_is_self_contained_composed_and_escapes_user_data() -> None:
     )
 
     assert page.startswith("<!doctype html>")
-    assert "#0B0F14" in page
-    assert "max-width: 880px" in page
-    assert '-apple-system, "SF Pro", "Segoe UI", sans-serif' in page
+    assert "--bg:#0D0E12" in page
+    assert "--accent:#FF4081" in page
+    assert "max-width: 1020px" in page
+    assert "'Inter','Geist',system-ui,-apple-system,sans-serif" in page
+    assert "6.8rem" not in page
+    assert "#62d7d1" not in page
     assert "<script src=" not in page
     assert "<link " not in page
     assert "<img " not in page
@@ -182,7 +185,7 @@ def test_html_is_self_contained_composed_and_escapes_user_data() -> None:
     assert "&lt;script&gt;alert(&#x27;observation&#x27;)&lt;/script&gt;" in page
     assert "<script>alert('observation')</script>" not in page
     assert "Try &lt;weekly planning&gt;" in page
-    assert 'Plan my week around &quot;Customer trust&quot; &lt;today&gt;.' in page
+    assert "Plan my week around &quot;Customer trust&quot; &lt;today&gt;." in page
     assert "navigator.clipboard" in page
     assert "document.execCommand('copy')" in page
     assert "Slack &amp; Co" in page
@@ -194,7 +197,7 @@ def test_html_is_self_contained_composed_and_escapes_user_data() -> None:
     assert "snapshot #7 saved" in page
 
 
-def test_optional_sections_render_in_required_order_and_disappear_when_absent() -> None:
+def test_tab_nav_and_panels_render_in_app_order_with_overview_visible() -> None:
     render = _renderer()
 
     page = render.render_dashboard_html(
@@ -208,35 +211,114 @@ def test_optional_sections_render_in_required_order_and_disappear_when_absent() 
         },
     )
 
-    ordered_markers = [
-        'id="receipt"',
-        'id="observations"',
-        'id="suggestion"',
-        'id="journey"',
-        'id="state"',
-        'id="history"',
-        'id="settings"',
-        "<footer>",
-    ]
-    positions = [page.index(marker) for marker in ordered_markers]
+    tab_labels = ["Overview", "Journey", "Settings", "History"]
+    for tab_name in (label.lower() for label in tab_labels):
+        assert (f'<button type="button" role="tab" id="tab-{tab_name}" data-tab-target="{tab_name}"') in page
+        assert f'data-tab="{tab_name}"' in page
+
+    positions = [page.index(f">{label}</button>") for label in tab_labels]
     assert positions == sorted(positions)
+    assert (
+        '<section class="tab-panel" id="panel-overview" data-tab="overview" '
+        'role="tabpanel" aria-labelledby="tab-overview">'
+    ) in page
+    for tab_name in ("journey", "settings", "history"):
+        assert (
+            f'<section class="tab-panel" id="panel-{tab_name}" data-tab="{tab_name}" '
+            f'role="tabpanel" aria-labelledby="tab-{tab_name}" hidden>'
+        ) in page
+    assert 'id="tab-overview" data-tab-target="overview" aria-selected="true"' in page
+    assert 'id="tab-journey" data-tab-target="journey" aria-selected="false"' in page
+    assert "window.location.hash" in page
+    assert "ArrowRight" in page
+    assert "ArrowLeft" in page
+    assert "#62d7d1" not in page
 
-    static_page = render.render_dashboard_html(_data(), _observations())
-    assert 'id="journey"' not in static_page
-    assert 'id="history"' not in static_page
-    assert 'id="settings"' not in static_page
 
-
-def test_static_page_contains_no_settings_markup_or_server_placeholders() -> None:
+def test_static_page_keeps_read_only_settings_without_server_placeholders() -> None:
     render = _renderer()
 
     page = render.render_dashboard_html(_data(), _observations())
 
     assert "__DEX_DASHBOARD_TOKEN__" not in page
     assert "__DEX_DASHBOARD_PORT__" not in page
-    assert 'id="settings"' not in page
+    assert 'data-tab="settings"' in page
+    assert 'id="state"' in page
+    assert "Open with 'let me change my settings' to make these live." in page
     assert "data-setting-id" not in page
     assert "dashboard-port" not in page
+
+
+def test_journey_collapses_after_twelve_chips_used_first_and_expands_inline() -> None:
+    render = _renderer()
+    skills = [
+        {
+            "id": f"unused-{index}",
+            "name": f"Unused {index}",
+            "state": "unused",
+        }
+        for index in range(1, 11)
+    ] + [
+        {
+            "id": f"used-{index}",
+            "name": f"Used {index}",
+            "state": "used",
+        }
+        for index in range(1, 6)
+    ]
+    journey = {
+        "counts": {"available": 15, "used": 5},
+        "groups": [
+            {
+                "id": "personal",
+                "name": "Personal tools",
+                "yours": True,
+                "skills": skills,
+            }
+        ],
+    }
+
+    page = render.render_dashboard_html(_data(), journey=journey)
+
+    assert "<h3>Yours</h3>" in page
+    assert page.index("Used 1") < page.index("Unused 1")
+    assert page.count("data-journey-extra hidden") == 3
+    assert ('<button type="button" class="journey-more" data-journey-expand aria-expanded="false"') in page
+    assert "+ 3 more" in page
+    assert "extra.hidden = false" in page
+
+
+def test_history_tab_has_a_quiet_first_snapshot_empty_state() -> None:
+    render = _renderer()
+
+    page = render.render_dashboard_html(_data(), history_data=None)
+
+    assert 'id="history"' in page
+    assert "Your first snapshot was saved today — this tab fills in as you come back." in page
+
+
+def test_live_settings_are_grouped_without_changing_wire_placeholders() -> None:
+    render = _renderer()
+    settings_section = importlib.import_module("core.dashboard.sections.settings")
+
+    page = render.render_dashboard_html(
+        _data(),
+        server_ctx={
+            "token": "__DEX_DASHBOARD_TOKEN__",
+            "port": "__DEX_DASHBOARD_PORT__",
+        },
+    )
+
+    settings = page[page.index('id="settings"') : page.index('id="history"')]
+    for label in ("Privacy", "Communication", "Connections", "Behavior"):
+        assert f'<h3 class="settings-group-label">{label}</h3>' in settings
+    assert settings.index("Anonymous product analytics") < settings.index("Communication")
+    assert settings.index("Formality") < settings.index("Connections")
+    assert settings.index("Existing integrations") < settings.index("Set up something new")
+    assert settings.index("New people and companies") > settings.index("Behavior")
+    assert page.count("__DEX_DASHBOARD_TOKEN__") == 1
+    assert page.count("__DEX_DASHBOARD_PORT__") == 1
+    assert settings_section._grouped_controls([("future-setting", "row")])["Behavior"] == ["row"]
 
 
 def test_new_section_fragments_have_css_for_every_emitted_class() -> None:
@@ -284,11 +366,7 @@ def test_new_section_fragments_have_css_for_every_emitted_class() -> None:
 
 def test_markdown_links_allow_safe_urls_and_reject_javascript() -> None:
     render = _renderer()
-    observations = {
-        "observations": [
-            "[Guide](https://example.test/guide) and [unsafe](javascript:alert(1))"
-        ]
-    }
+    observations = {"observations": ["[Guide](https://example.test/guide) and [unsafe](javascript:alert(1))"]}
 
     page = render.render_dashboard_html(_data(), observations, archived=False)
 
@@ -473,8 +551,10 @@ def test_render_omits_derived_sections_when_their_builders_fail(
     )
 
     page = output.read_text(encoding="utf-8")
-    assert 'id="journey"' not in page
-    assert 'id="history"' not in page
+    assert 'id="journey"' in page
+    assert "No capabilities are installed in this Dex yet." in page
+    assert 'id="history"' in page
+    assert "Your first snapshot was saved today — this tab fills in as you come back." in page
 
 
 def test_no_archive_writes_only_the_requested_html(tmp_path: Path) -> None:

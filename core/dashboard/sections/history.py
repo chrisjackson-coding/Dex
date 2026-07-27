@@ -53,10 +53,14 @@ def _milestone(history_data: Any) -> dict[str, Any]:
 
 
 def _chart(title: str, values: list[Any]) -> str:
+    sparkline = sparkline_svg(values, width=220, height=42).replace(
+        'stroke="#62d7d1"',
+        'stroke="currentColor"',
+    )
     return f"""
         <div class="state-panel history-chart">
           <h3>{title}</h3>
-          {sparkline_svg(values, width=220, height=42)}
+          {sparkline}
         </div>"""
 
 

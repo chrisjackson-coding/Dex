@@ -10,6 +10,12 @@ _CHIP_CLASS = {
     "unused": "dim",
     "available-in-pack": "outlined",
 }
+_STATE_ORDER = {
+    "used": 0,
+    "unused": 1,
+    "available-in-pack": 2,
+}
+_VISIBLE_CHIPS = 12
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -24,28 +30,51 @@ def _number(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
-def _chip(skill: dict[str, Any]) -> str:
+def _chip(skill: dict[str, Any], *, hidden: bool = False) -> str:
     state = str(skill.get("state") or "")
     css_class = _CHIP_CLASS.get(state, "dim")
-    name = html.escape(str(skill.get("name") or skill.get("id") or "Unnamed capability"), quote=True)
+    name = html.escape(
+        str(skill.get("name") or skill.get("id") or "Unnamed capability"),
+        quote=True,
+    )
     description = html.escape(str(skill.get("description") or ""), quote=True)
     label = html.escape(
-        f"{skill.get('name') or skill.get('id') or 'Unnamed capability'}: "
-        f"{state.replace('-', ' ') or 'unused'}",
+        f"{skill.get('name') or skill.get('id') or 'Unnamed capability'}: {state.replace('-', ' ') or 'unused'}",
         quote=True,
     )
     title = f' title="{description}"' if description else ""
-    return f'<li class="journey-chip {css_class}"{title} aria-label="{label}">{name}</li>'
+    extra = " data-journey-extra hidden" if hidden else ""
+    return f'<li class="journey-chip {css_class}"{title} aria-label="{label}"{extra}>{name}</li>'
 
 
-def _territory(group: dict[str, Any]) -> str:
-    name = html.escape(str(group.get("name") or "Other"), quote=True)
+def _territory(group: dict[str, Any], index: int) -> str:
+    raw_name = "Yours" if group.get("yours") is True else group.get("name") or "Other"
+    name = html.escape(str(raw_name), quote=True)
     skills = [skill for skill in _list(group.get("skills")) if isinstance(skill, dict)]
-    chips = "".join(_chip(skill) for skill in skills)
+    ordered = [
+        skill
+        for _, skill in sorted(
+            enumerate(skills),
+            key=lambda item: (
+                _STATE_ORDER.get(str(item[1].get("state") or ""), 1),
+                item[0],
+            ),
+        )
+    ]
+    chips = "".join(_chip(skill, hidden=skill_index >= _VISIBLE_CHIPS) for skill_index, skill in enumerate(ordered))
+    remaining = max(0, len(ordered) - _VISIBLE_CHIPS)
+    group_id = f"journey-group-{index}"
+    more = ""
+    if remaining:
+        more = f"""
+          <li class="journey-more-item">
+            <button type="button" class="journey-more" data-journey-expand aria-expanded="false"
+              aria-controls="{group_id}">+ {remaining} more</button>
+          </li>"""
     return f"""
       <div class="state-panel territory">
         <h3>{name}</h3>
-        <ul class="journey-chips">{chips}</ul>
+        <ul class="journey-chips" id="{group_id}">{chips}{more}</ul>
       </div>"""
 
 
@@ -56,7 +85,7 @@ def render_journey(journey: dict) -> str:
     available = _number(counts.get("available"))
     used = min(_number(counts.get("used")), available)
     groups = [group for group in _list(source.get("groups")) if isinstance(group, dict)]
-    body = "".join(_territory(group) for group in groups)
+    body = "".join(_territory(group, index) for index, group in enumerate(groups))
     if not body:
         body = '<p class="quiet">No capabilities are installed in this Dex yet.</p>'
     return f"""

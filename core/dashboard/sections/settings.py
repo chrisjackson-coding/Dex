@@ -8,6 +8,14 @@ import re
 from typing import Any
 
 SAFE_INTEGRATION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_SETTING_GROUPS = ("Privacy", "Communication", "Connections", "Behavior")
+_SETTING_GROUP_BY_ID = {
+    "analytics_enabled": "Privacy",
+    "health_telemetry": "Privacy",
+    "formality": "Communication",
+    "directness": "Communication",
+    "entity_creation": "Behavior",
+}
 
 
 def _escape(value: Any) -> str:
@@ -103,6 +111,14 @@ def _integration_rows(data: dict[str, Any]) -> str:
     return "".join(rows)
 
 
+def _grouped_controls(controls: list[tuple[str, str]]) -> dict[str, list[str]]:
+    grouped = {name: [] for name in _SETTING_GROUPS}
+    for setting_id, control in controls:
+        group = _SETTING_GROUP_BY_ID.get(setting_id, "Behavior")
+        grouped[group].append(control)
+    return grouped
+
+
 def render(
     data: dict[str, Any],
     server_ctx: dict[str, Any],
@@ -147,6 +163,15 @@ def render(
         value_kind="health",
     )
     integration_rows = _integration_rows(data)
+    grouped = _grouped_controls(
+        [
+            ("analytics_enabled", analytics_switch),
+            ("entity_creation", entity_select),
+            ("formality", formality_select),
+            ("directness", directness_select),
+            ("health_telemetry", health_switch),
+        ]
+    )
     fragment = f"""
     <section id="settings" aria-labelledby="settings-heading">
       <div class="section-heading">
@@ -154,24 +179,32 @@ def render(
         <h2 id="settings-heading">Tune Dex from here</h2>
         <p class="quiet">These changes stay in your local Dex files.</p>
       </div>
-      <div class="settings-list">
-        {analytics_switch}
-        {entity_select}
-        {formality_select}
-        {directness_select}
-        {health_switch}
+      <div class="settings-group" data-settings-group="privacy">
+        <h3 class="settings-group-label">Privacy</h3>
+        <div class="settings-list">{"".join(grouped["Privacy"])}</div>
       </div>
-      <div class="settings-subsection">
-        <h3>Existing integrations</h3>
-        <div class="settings-list">{integration_rows}</div>
+      <div class="settings-group" data-settings-group="communication">
+        <h3 class="settings-group-label">Communication</h3>
+        <div class="settings-list">{"".join(grouped["Communication"])}</div>
       </div>
-      <div class="settings-subsection">
-        <h3>Set up something new</h3>
-        <button type="button" class="handoff-button" data-command="/todoist-setup">
-          Set up Todoist
-          <span>Dex walks you through it (run /todoist-setup)</span>
-        </button>
-        <span class="handoff-status" data-handoff-status aria-live="polite"></span>
+      <div class="settings-group" data-settings-group="connections">
+        <h3 class="settings-group-label">Connections</h3>
+        <div class="settings-subsection">
+          <h4>Existing integrations</h4>
+          <div class="settings-list">{integration_rows}</div>
+        </div>
+        <div class="settings-subsection">
+          <h4>Set up something new</h4>
+          <button type="button" class="handoff-button" data-command="/todoist-setup">
+            Set up Todoist
+            <span>Dex walks you through it (run /todoist-setup)</span>
+          </button>
+          <span class="handoff-status" data-handoff-status aria-live="polite"></span>
+        </div>
+      </div>
+      <div class="settings-group" data-settings-group="behavior">
+        <h3 class="settings-group-label">Behavior</h3>
+        <div class="settings-list">{"".join(grouped["Behavior"])}</div>
       </div>
     </section>"""
 

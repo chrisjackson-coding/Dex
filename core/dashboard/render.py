@@ -102,14 +102,10 @@ def _receipt_lines(data: dict[str, Any]) -> tuple[list[str], list[str]]:
     meetings_total = _number(data.get("meetings"), "total")
     tasks_done = _number(data.get("tasks"), "completed")
     people = _number(data.get("people"), "total")
-    skills_used = len(
-        [name for name in _list(_mapping(data.get("skills")).get("used")) if isinstance(name, str)]
-    )
+    skills_used = len([name for name in _list(_mapping(data.get("skills")).get("used")) if isinstance(name, str)])
     weekly = []
     if meetings_week:
-        weekly.append(
-            f"{meetings_week} {_plural(meetings_week, 'meeting')} turned into notes this week"
-        )
+        weekly.append(f"{meetings_week} {_plural(meetings_week, 'meeting')} turned into notes this week")
     if tasks_week:
         weekly.append(f"{tasks_week} {_plural(tasks_week, 'task')} completed this week")
     all_time = []
@@ -154,9 +150,7 @@ def _render_receipt(data: dict[str, Any]) -> str:
 
 def _observation_strings(observations: Any) -> list[str]:
     return [
-        item
-        for item in _list(_mapping(observations).get("observations"))
-        if isinstance(item, str) and item.strip()
+        item for item in _list(_mapping(observations).get("observations")) if isinstance(item, str) and item.strip()
     ]
 
 
@@ -165,10 +159,7 @@ def _render_observations(observations: Any) -> str:
     if items:
         body = "".join(f'<div class="observation">{_markdown(item)}</div>' for item in items)
     else:
-        body = (
-            '<p class="quiet">Open this from a Dex session to get Dex&#x27;s '
-            "observations.</p>"
-        )
+        body = '<p class="quiet">Open this from a Dex session to get Dex&#x27;s observations.</p>'
     return f"""
     <section id="observations" aria-labelledby="observations-heading">
       <div class="section-heading">
@@ -181,10 +172,7 @@ def _render_observations(observations: Any) -> str:
 
 def _suggestion(observations: Any) -> dict[str, str]:
     raw = _mapping(_mapping(observations).get("suggestion"))
-    return {
-        key: str(raw.get(key) or "").strip()
-        for key in ("title", "why", "try_prompt")
-    }
+    return {key: str(raw.get(key) or "").strip() for key in ("title", "why", "try_prompt")}
 
 
 def _render_suggestion(observations: Any) -> str:
@@ -192,11 +180,7 @@ def _render_suggestion(observations: Any) -> str:
     if not any(suggestion.values()):
         return ""
     title = suggestion["title"] or "A useful next step"
-    why = (
-        f'<p class="suggestion-why">{_escape(suggestion["why"])}</p>'
-        if suggestion["why"]
-        else ""
-    )
+    why = f'<p class="suggestion-why">{_escape(suggestion["why"])}</p>' if suggestion["why"] else ""
     prompt = ""
     if suggestion["try_prompt"]:
         prompt = f"""
@@ -237,14 +221,9 @@ def _render_profile_state(data: dict[str, Any]) -> str:
     if role:
         rows.append(f"<div><dt>Role</dt><dd>{_escape(role)}</dd></div>")
     if pillars:
-        rows.append(
-            f"<div><dt>Pillars</dt><dd>{_escape(', '.join(pillars))}</dd></div>"
-        )
+        rows.append(f"<div><dt>Pillars</dt><dd>{_escape(', '.join(pillars))}</dd></div>")
     if communication_parts:
-        rows.append(
-            "<div><dt>Communication style</dt>"
-            f"<dd>{_escape(', '.join(communication_parts))}</dd></div>"
-        )
+        rows.append(f"<div><dt>Communication style</dt><dd>{_escape(', '.join(communication_parts))}</dd></div>")
     if not rows:
         return '<p class="quiet">Your role and preferences are not configured yet.</p>'
     return f'<dl class="state-list">{"".join(rows)}</dl>'
@@ -258,7 +237,7 @@ def _render_integrations(data: dict[str, Any]) -> str:
         state = "connected" if enabled else "not set up"
         css = "on" if enabled else "off"
         rows.append(
-            '<li>'
+            "<li>"
             f'<span class="dot dot-{css}" aria-hidden="true"></span>'
             f'<span class="integration-name">{_escape(name)}</span>'
             f'<span class="integration-state">{state}</span>'
@@ -282,11 +261,7 @@ def _render_health(data: dict[str, Any]) -> str:
     health = _mapping(data.get("health"))
     status = str(health.get("status") or "unknown")
     if status != "fresh":
-        return (
-            '<p class="quiet health-guidance">'
-            "Run /dex-doctor for a fresh checkup."
-            "</p>"
-        )
+        return '<p class="quiet health-guidance">Run /dex-doctor for a fresh checkup.</p>'
     rows = []
     for check in _list(health.get("checks")):
         if not isinstance(check, dict):
@@ -294,7 +269,7 @@ def _render_health(data: dict[str, Any]) -> str:
         css, label = _health_label(str(check.get("verdict") or "UNKNOWN"))
         feature = str(check.get("feature") or check.get("id") or "Unknown check")
         rows.append(
-            '<li>'
+            "<li>"
             f'<span class="dot dot-{css}" aria-hidden="true"></span>'
             f'<span class="health-name">{_escape(feature)}</span>'
             f'<span class="health-state">{label}</span>'
@@ -343,6 +318,19 @@ def _display_date(data: dict[str, Any]) -> str:
     return f"{generated:%A, %B} {generated.day}, {generated.year}"
 
 
+def _render_empty_history() -> str:
+    return """
+    <section id="history" aria-labelledby="history-heading">
+      <div class="section-heading">
+        <p class="kicker">Looking back</p>
+        <h2 id="history-heading">The shape of your Dex</h2>
+      </div>
+      <p class="quiet history-empty">
+        Your first snapshot was saved today — this tab fills in as you come back.
+      </p>
+    </section>"""
+
+
 def render_dashboard_html(
     data: dict[str, Any],
     observations: dict[str, Any] | None = None,
@@ -353,24 +341,32 @@ def render_dashboard_html(
     history_data: dict[str, Any] | None = None,
     server_ctx: dict[str, Any] | None = None,
 ) -> str:
-    """Render escaped data into one self-contained Nightfall HTML document."""
+    """Render escaped data into one self-contained, tabbed Dex app."""
     observations = observations or {}
     profile = _mapping(data.get("profile"))
     name = str(profile.get("name") or "").strip()
-    identity = f"<p class=\"user-name\">{_escape(name)}</p>" if name else ""
+    identity = f'<span class="user-name">for {_escape(name)}</span>' if name else ""
     archive_note = f"snapshot #{archive_count} saved" if archived else "snapshot not saved"
     suggestion = _render_suggestion(observations)
-    journey_section = render_journey(journey) if journey is not None else ""
-    history_section = render_history(history_data) if history_data is not None else ""
+    journey_section = render_journey(journey or {})
+    history_section = render_history(history_data or {}) or _render_empty_history()
     server_meta = ""
-    settings_section = ""
     settings_script = ""
     if server_ctx:
         settings_section, settings_script = render_settings(data, server_ctx)
-        server_meta = (
-            '\n  <meta name="dashboard-port" '
-            f'content="{_escape(server_ctx.get("port", ""))}">'
-        )
+        server_meta = f'\n  <meta name="dashboard-port" content="{_escape(server_ctx.get("port", ""))}">'
+    else:
+        settings_section = f"""
+    <section id="settings" aria-labelledby="settings-heading">
+      <div class="section-heading">
+        <p class="kicker">Settings</p>
+        <h2 id="settings-heading">The shape of your Dex</h2>
+        <p class="quiet settings-readonly-note">
+          Open with 'let me change my settings' to make these live.
+        </p>
+      </div>
+      {_render_state(data)}
+    </section>"""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -379,295 +375,561 @@ def render_dashboard_html(
   <meta name="color-scheme" content="dark">{server_meta}
   <title>Your Dex</title>
   <style>
-    :root {{
-      color-scheme: dark;
-      --bg: #0B0F14;
-      --surface: #11171e;
-      --surface-raised: #151d25;
-      --text: #edf4f5;
-      --muted: #91a0a5;
-      --faint: #66747a;
-      --border: rgba(255, 255, 255, .08);
-      --accent: #62d7d1;
-      --accent-soft: rgba(98, 215, 209, .11);
-      --good: #74d5a5;
-      --attention: #e7c978;
-    }}
+    :root{{--bg:#0D0E12;--surface:#15161C;--elevated:#1C1D25;--line:#24262E;
+      --line2:#32343F;--fg:#E4E5E7;--fg2:#9B9DA6;--fg3:#787B87;--inv:#111111;
+      --accent:#FF4081;--accent-dim:rgba(255,64,129,0.72);
+      --accent-bg:rgba(255,64,129,0.12);
+      --mono:'Geist Mono','JetBrains Mono',ui-monospace,monospace;
+      --sans:'Inter','Geist',system-ui,-apple-system,sans-serif;color-scheme:dark}}
     * {{ box-sizing: border-box; }}
-    html {{ background: var(--bg); }}
+    [hidden] {{ display: none !important; }}
+    html {{ min-height: 100%; background: var(--bg); }}
     body {{
+      min-height: 100vh;
       margin: 0;
       background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, "SF Pro", "Segoe UI", sans-serif;
-      font-size: 16px;
-      line-height: 1.6;
+      color: var(--fg);
+      font: 15px/1.6 var(--sans);
       -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }}
-    main {{ max-width: 880px; margin: 0 auto; padding: clamp(2rem, 7vw, 6rem) 1.25rem 2.5rem; }}
-    header {{ padding: 0 0 clamp(3.5rem, 9vw, 7rem); }}
-    .kicker {{
-      margin: 0 0 .7rem;
+    body::before {{
+      content: "";
+      position: fixed;
+      z-index: 0;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(
+        880px 560px at 80% -10%,
+        rgba(255,64,129,0.06),
+        transparent 60%
+      );
+    }}
+    .topbar {{
+      position: sticky;
+      z-index: 10;
+      top: 0;
+      border-bottom: 1px solid var(--line);
+      background: rgba(13,14,18,.92);
+      backdrop-filter: blur(14px);
+    }}
+    .nav-shell {{
+      display: grid;
+      max-width: 1020px;
+      min-height: 56px;
+      margin: 0 auto;
+      padding: 0 20px;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 28px;
+    }}
+    .wordmark {{
+      color: var(--fg);
+      font-size: 21px;
+      font-weight: 600;
+      letter-spacing: -.04em;
+    }}
+    .wordmark-dot {{ color: var(--accent); }}
+    .tab-list {{
+      display: flex;
+      justify-content: flex-end;
+      gap: 4px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }}
+    .tab-list::-webkit-scrollbar {{ display: none; }}
+    button {{
+      border: 1px solid var(--line2);
+      border-radius: 3px;
+      background: transparent;
+      color: var(--fg);
+      padding: 8px 12px;
+      font: 500 13px/1.25 var(--sans);
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease, color .15s ease;
+    }}
+    button:hover {{ border-color: var(--accent); }}
+    button:focus-visible {{
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }}
+    .tab-list button {{
+      border-color: transparent;
+      color: var(--fg2);
+      white-space: nowrap;
+    }}
+    .tab-list button:hover {{ color: var(--fg); }}
+    .tab-list button[aria-selected="true"] {{
+      border-color: var(--line2);
+      background: var(--elevated);
+      color: var(--fg);
+    }}
+    main {{
+      position: relative;
+      z-index: 1;
+      max-width: 1020px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }}
+    .tab-panel {{
+      min-height: calc(100vh - 136px);
+      padding: 42px 0 48px;
+      border: 0;
+    }}
+    .tab-panel > section:first-child {{ padding-top: 0; border-top: 0; }}
+    .overview-intro + section {{ border-top: 0; }}
+    .overview-intro {{
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 0 0 30px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .greeting-line {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px;
+    }}
+    h1, h2, h3, h4, p {{ overflow-wrap: anywhere; }}
+    h1, h2, h3, h4 {{
+      font-weight: 500;
+      letter-spacing: -.01em;
+    }}
+    h1 {{ margin: 0; font-size: clamp(26px,3.2vw,36px); line-height: 1.16; }}
+    h2 {{ margin: 0; font-size: clamp(24px,3vw,34px); line-height: 1.18; }}
+    h3, h4 {{ margin: 0; }}
+    h3 {{ font-size: 14px; }}
+    h4 {{ color: var(--fg2); font-size: 13px; }}
+    .user-name {{ color: var(--fg2); font-size: 16px; }}
+    .generated-date {{ margin: 0; color: var(--fg3); font: 12px/1.5 var(--mono); }}
+    section {{
+      padding: 42px 0;
+      border-top: 1px solid var(--line);
+    }}
+    .section-heading {{ max-width: 650px; margin-bottom: 22px; }}
+    .kicker, .settings-group-label {{
+      margin: 0 0 7px;
       color: var(--accent);
-      font-size: .76rem;
-      font-weight: 700;
-      letter-spacing: .1em;
+      font: 500 11px/1.4 var(--mono);
+      letter-spacing: .06em;
       text-transform: uppercase;
     }}
-    h1, h2, h3, p {{ overflow-wrap: anywhere; }}
-    h1 {{ margin: 0; font-size: clamp(3rem, 10vw, 6.8rem); line-height: .94; letter-spacing: -.065em; font-weight: 720; }}
-    .user-name {{ margin: 1rem 0 0; color: var(--text); font-size: clamp(1.25rem, 3vw, 1.7rem); }}
-    .generated-date {{ margin: .2rem 0 0; color: var(--muted); }}
-    section {{ padding: clamp(2.1rem, 6vw, 4rem) 0; border-top: 1px solid var(--border); }}
-    .section-heading {{ max-width: 38rem; margin-bottom: 2rem; }}
-    h2 {{ margin: 0; font-size: clamp(1.75rem, 5vw, 2.8rem); line-height: 1.08; letter-spacing: -.035em; }}
-    h3 {{ margin: 0 0 .7rem; font-size: .82rem; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }}
-    .quiet, .health-note {{ color: var(--muted); }}
-    .receipt-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 2.5rem; }}
-    .receipt-group p {{ margin: .28rem 0; font-size: clamp(1.08rem, 2vw, 1.28rem); }}
-    .prose {{ max-width: 44rem; }}
-    .observation {{ margin: 0 0 1.5rem; color: #dbe5e7; font-size: clamp(1.05rem, 2.2vw, 1.22rem); }}
+    .quiet, .health-note {{ color: var(--fg2); }}
+    .receipt-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .receipt-group, .observation, .state-panel, .health-panel {{
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--surface);
+      padding: 22px 24px;
+    }}
+    .receipt-group h3 {{
+      margin-bottom: 12px;
+      color: var(--fg3);
+      font: 500 11px/1.4 var(--mono);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }}
+    .receipt-group p {{ margin: 4px 0; color: var(--fg); font-size: 15px; }}
+    .prose {{ display: grid; max-width: 760px; gap: 10px; }}
+    .observation {{ color: var(--fg2); }}
     .observation p {{ margin: 0; }}
-    strong {{ color: var(--text); font-weight: 720; }}
+    strong {{ color: var(--fg); font-weight: 600; }}
     code {{
-      padding: .12em .35em;
-      border: 1px solid var(--border);
-      border-radius: .3rem;
-      background: rgba(255, 255, 255, .04);
-      color: #c8f2ef;
-      font: .9em/1.4 ui-monospace, "SFMono-Regular", Consolas, monospace;
+      padding: 2px 5px;
+      border: 1px solid var(--line2);
+      border-radius: 3px;
+      background: var(--elevated);
+      color: var(--fg);
+      font: .9em/1.4 var(--mono);
     }}
-    a {{ color: var(--accent); text-underline-offset: .2em; }}
+    a {{ color: var(--accent); text-underline-offset: 3px; }}
     .suggestion {{
-      margin: 2rem 0;
-      padding: clamp(1.5rem, 5vw, 2.6rem);
-      border: 1px solid rgba(98, 215, 209, .24);
-      border-radius: 1rem;
-      background: linear-gradient(145deg, var(--accent-soft), rgba(255, 255, 255, .015) 60%);
+      margin: 0;
+      padding: 24px;
+      border: 1px solid var(--accent-dim);
+      border-radius: 9px;
+      background: var(--accent-bg);
     }}
-    .suggestion-why {{ max-width: 42rem; margin: .8rem 0 0; color: var(--muted); }}
-    .try-block {{ position: relative; margin-top: 1.8rem; padding: 1.1rem; border: 1px solid var(--border); border-radius: .7rem; background: rgba(4, 8, 12, .56); }}
-    .try-label {{ margin-bottom: .6rem; color: var(--accent); font-size: .78rem; font-weight: 700; }}
-    pre {{ margin: 0; padding-right: 7rem; white-space: pre-wrap; overflow-wrap: anywhere; }}
-    pre code {{ padding: 0; border: 0; background: transparent; color: var(--text); }}
-    button {{
+    .suggestion-why {{ max-width: 680px; margin: 8px 0 0; color: var(--fg2); }}
+    .try-block {{
+      position: relative;
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--line2);
+      border-radius: 8px;
+      background: var(--bg);
+    }}
+    .try-label {{
+      margin-bottom: 6px;
+      color: var(--accent);
+      font: 500 11px/1.4 var(--mono);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }}
+    pre {{ margin: 0; padding-right: 112px; white-space: pre-wrap; overflow-wrap: anywhere; }}
+    pre code {{ padding: 0; border: 0; background: transparent; color: var(--fg); }}
+    #copyPrompt {{
       position: absolute;
-      top: .8rem;
-      right: .8rem;
-      border: 1px solid rgba(98, 215, 209, .35);
-      border-radius: .5rem;
-      background: rgba(98, 215, 209, .12);
-      color: var(--text);
-      padding: .48rem .72rem;
-      font: inherit;
-      font-size: .82rem;
-      cursor: pointer;
+      top: 12px;
+      right: 12px;
+      border-color: transparent;
+      background: var(--accent);
+      color: var(--inv);
     }}
-    button:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 3px; }}
-    .copy-status {{ position: absolute; right: .9rem; bottom: .45rem; color: var(--muted); font-size: .72rem; }}
-    .state-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }}
-    .state-panel, .health-panel {{ padding: 1.25rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--surface); }}
+    #copyPrompt:hover {{ background: #ff6ea2; }}
+    .copy-status {{
+      position: absolute;
+      right: 15px;
+      bottom: 5px;
+      color: var(--fg3);
+      font: 11px/1.4 var(--mono);
+    }}
+    .state-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .state-panel h3, .health-panel h3 {{
+      margin-bottom: 12px;
+      color: var(--fg2);
+    }}
     .state-list {{ margin: 0; }}
-    .state-list div {{ padding: .65rem 0; border-bottom: 1px solid var(--border); }}
+    .state-list div {{
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line);
+    }}
     .state-list div:last-child {{ border-bottom: 0; }}
-    dt {{ color: var(--faint); font-size: .75rem; }}
-    dd {{ margin: .12rem 0 0; }}
-    .integration-list, .health-list {{ list-style: none; margin: 0; padding: 0; }}
-    .integration-list li, .health-list li {{ display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .65rem; padding: .48rem 0; }}
-    .integration-state, .health-state {{ color: var(--muted); font-size: .84rem; }}
-    .dot {{ width: .48rem; height: .48rem; border-radius: 50%; background: var(--faint); }}
-    .dot-on, .dot-good {{ background: var(--good); box-shadow: 0 0 0 3px rgba(116, 213, 165, .08); }}
-    .dot-attention {{ background: var(--attention); }}
-    .dot-off, .dot-unknown {{ background: var(--faint); }}
-    .health-panel {{ display: grid; grid-template-columns: minmax(12rem, .8fr) minmax(16rem, 1.2fr); gap: 1.5rem; margin-top: 1rem; background: var(--surface-raised); }}
-    .health-note {{ margin: 0; font-size: .82rem; }}
-    .health-guidance {{ margin: 0; }}
-    .journey-grid {{ align-items: start; }}
+    dt {{ color: var(--fg3); font: 11px/1.4 var(--mono); }}
+    dd {{ margin: 2px 0 0; }}
+    .integration-list, .health-list {{
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }}
+    .integration-list li, .health-list li {{
+      display: grid;
+      padding: 5px 0;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 9px;
+    }}
+    .integration-state, .health-state {{ color: var(--fg2); font-size: 13px; }}
+    .dot {{
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--fg3);
+    }}
+    .dot-on, .dot-good {{ background: var(--accent); }}
+    .dot-attention {{ background: var(--accent-dim); }}
+    .dot-off, .dot-unknown {{ background: var(--fg3); }}
+    .health-panel {{
+      display: grid;
+      margin-top: 12px;
+      grid-template-columns: minmax(180px,.75fr) minmax(260px,1.25fr);
+      gap: 24px;
+      background: var(--elevated);
+    }}
+    .health-note, .health-guidance {{ margin: 0; font-size: 12px; }}
+    .journey-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+      gap: 12px;
+    }}
     .territory {{ min-width: 0; }}
     .journey-chips {{
       display: flex;
       flex-wrap: wrap;
-      gap: .55rem;
-      list-style: none;
+      gap: 6px;
       margin: 0;
       padding: 0;
+      list-style: none;
     }}
-    .journey-chip {{
-      padding: .34rem .58rem;
-      border: 1px solid var(--border);
-      border-radius: .55rem;
-      font-size: .78rem;
-      line-height: 1.35;
+    .journey-chip, .journey-more {{
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      background: var(--surface);
+      padding: 5px 8px;
+      font: 12px/1.35 var(--mono);
     }}
     .journey-chip.lit {{
-      border-color: rgba(98, 215, 209, .42);
-      background: var(--accent-soft);
-      color: var(--text);
+      border-color: var(--accent-dim);
+      background: var(--accent-bg);
+      color: var(--fg);
     }}
-    .journey-chip.dim {{
-      border-color: rgba(255, 255, 255, .06);
-      color: var(--faint);
-    }}
+    .journey-chip.dim {{ color: var(--fg3); }}
     .journey-chip.outlined {{
+      border-color: var(--line2);
       border-style: dashed;
-      border-color: rgba(145, 160, 165, .28);
-      color: var(--faint);
+      color: var(--fg3);
     }}
-    .history-trends {{ gap: 1rem; margin-bottom: 1rem; }}
-    .history-chart svg {{ display: block; width: 100%; height: auto; }}
-    .history-milestone {{ margin: 1rem 0; padding: 1rem 1.25rem; }}
-    .history-milestone h3 {{ margin: 0; color: var(--text); }}
-    .history-looking-back {{ margin-top: 1rem; }}
-    .history-looking-back p {{ margin: 0; }}
+    .journey-more {{
+      color: var(--fg2);
+      border-color: var(--line2);
+    }}
+    .journey-more:hover {{ color: var(--accent); }}
+    .history-trends {{ margin-bottom: 12px; gap: 12px; }}
+    .history-chart svg {{ display: block; width: 100%; height: auto; color: var(--accent); }}
+    .history-chart polyline {{ stroke: var(--accent); }}
+    .history-milestone {{ margin: 12px 0; }}
+    .history-milestone h3 {{ margin: 0; color: var(--fg); }}
+    .history-looking-back {{ margin-top: 12px; }}
+    .history-looking-back p, .history-empty {{ margin: 0; }}
+    .settings-readonly-note {{ margin: 8px 0 0; }}
+    #settings > #state {{
+      padding-bottom: 0;
+      border-top: 0;
+    }}
+    #settings > #state > .section-heading {{ display: none; }}
+    .settings-group {{ margin-top: 30px; }}
+    .section-heading + .settings-group {{ margin-top: 0; }}
+    .settings-group-label {{ margin-bottom: 9px; }}
     .settings-list {{
       overflow: hidden;
-      border: 1px solid var(--border);
-      border-radius: .8rem;
+      border: 1px solid var(--line);
+      border-radius: 9px;
       background: var(--surface);
     }}
     .setting-row {{
       display: grid;
+      padding: 15px 17px;
+      border-bottom: 1px solid var(--line);
       grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
-      gap: 1.25rem;
-      padding: 1rem 1.15rem;
-      border-bottom: 1px solid var(--border);
+      gap: 20px;
     }}
     .setting-row:last-child {{ border-bottom: 0; }}
     .setting-row-readonly {{ grid-template-columns: 1fr; }}
     .setting-copy {{ min-width: 0; }}
     .setting-copy label, .setting-label {{
       display: block;
-      color: var(--text);
-      font-size: .94rem;
-      font-weight: 650;
+      color: var(--fg);
+      font-size: 14px;
+      font-weight: 500;
     }}
-    .setting-copy p {{ margin: .18rem 0 0; color: var(--muted); font-size: .78rem; }}
+    .setting-copy p {{ margin: 2px 0 0; color: var(--fg2); font-size: 12px; }}
     .setting-action {{
       display: flex;
-      min-width: 8.5rem;
+      min-width: 136px;
       flex-direction: column;
       align-items: flex-end;
-      gap: .25rem;
+      gap: 4px;
     }}
     .setting-action input[role="switch"] {{
       appearance: none;
       position: relative;
-      width: 2.6rem;
-      height: 1.45rem;
+      width: 38px;
+      height: 21px;
       margin: 0;
-      border: 1px solid rgba(145, 160, 165, .3);
-      border-radius: 999px;
-      background: rgba(255, 255, 255, .06);
+      border: 1px solid var(--line2);
+      border-radius: 11px;
+      background: var(--elevated);
       cursor: pointer;
-      transition: background .16s ease, border-color .16s ease;
+      transition: background .15s ease, border-color .15s ease;
     }}
     .setting-action input[role="switch"]::after {{
       content: "";
       position: absolute;
-      top: .18rem;
-      left: .2rem;
-      width: .96rem;
-      height: .96rem;
+      top: 3px;
+      left: 3px;
+      width: 13px;
+      height: 13px;
       border-radius: 50%;
-      background: var(--muted);
-      transition: transform .16s ease, background .16s ease;
+      background: var(--fg3);
+      transition: transform .15s ease, background .15s ease;
     }}
     .setting-action input[role="switch"]:checked {{
-      border-color: rgba(98, 215, 209, .62);
-      background: rgba(98, 215, 209, .32);
+      border-color: var(--accent);
+      background: var(--accent);
     }}
     .setting-action input[role="switch"]:checked::after {{
-      background: var(--accent);
-      transform: translateX(1.16rem);
+      background: var(--inv);
+      transform: translateX(17px);
     }}
     .setting-action input[role="switch"]:focus-visible,
     .setting-action select:focus-visible {{
       outline: 2px solid var(--accent);
-      outline-offset: 3px;
+      outline-offset: 2px;
     }}
     .setting-action input:disabled, .setting-action select:disabled {{
       cursor: not-allowed;
       opacity: .48;
     }}
     .setting-action select {{
-      min-width: 10.5rem;
-      max-width: 15rem;
-      border: 1px solid rgba(145, 160, 165, .26);
-      border-radius: .55rem;
-      background: var(--surface-raised);
-      color: var(--text);
-      padding: .48rem 1.8rem .48rem .62rem;
-      font: inherit;
-      font-size: .82rem;
+      min-width: 168px;
+      max-width: 240px;
+      border: 1px solid var(--line2);
+      border-radius: 3px;
+      background: var(--elevated);
+      color: var(--fg);
+      padding: 7px 28px 7px 9px;
+      font: 12px/1.4 var(--mono);
     }}
     .setting-status {{
-      min-height: 1.1rem;
-      color: var(--muted);
-      font-size: .7rem;
+      min-height: 16px;
+      color: var(--fg2);
+      font: 10px/1.4 var(--mono);
       text-align: right;
     }}
-    .settings-subsection {{ margin-top: 2rem; }}
-    .settings-subsection h3 {{ margin-bottom: .8rem; }}
+    .settings-subsection {{ margin-top: 16px; }}
+    .settings-subsection h4 {{ margin-bottom: 8px; }}
     .handoff-button {{
-      position: static;
       display: flex;
       width: 100%;
       align-items: center;
       justify-content: space-between;
-      gap: 1rem;
-      border-color: var(--border);
-      background: var(--surface);
-      padding: .85rem 1rem;
+      gap: 16px;
+      border-color: var(--line2);
+      background: transparent;
+      padding: 11px 13px;
       text-align: left;
     }}
-    .handoff-button:hover {{ border-color: rgba(98, 215, 209, .28); }}
-    .handoff-button span {{ color: var(--muted); font-size: .75rem; font-weight: 400; }}
-    .handoff-status {{ display: block; min-height: 1.2rem; margin-top: .45rem; color: var(--muted); font-size: .75rem; }}
+    .handoff-button span {{ color: var(--fg2); font-size: 11px; font-weight: 400; }}
+    .handoff-status {{
+      display: block;
+      min-height: 18px;
+      margin-top: 6px;
+      color: var(--fg2);
+      font: 11px/1.4 var(--mono);
+    }}
     .undo-button {{
-      position: static;
-      margin: 0 0 0 .15rem;
+      margin-left: 2px;
       border: 0;
-      background: transparent;
       color: var(--accent);
       padding: 0;
-      font-size: inherit;
+      font: inherit;
       text-decoration: underline;
-      text-underline-offset: .15em;
+      text-underline-offset: 2px;
     }}
-    footer {{ display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1rem; padding-top: 2rem; border-top: 1px solid var(--border); color: var(--faint); font-size: .78rem; }}
-    @media (max-width: 600px) {{
-      main {{ padding-inline: 1rem; }}
+    footer {{
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px 16px;
+      padding: 20px 0 28px;
+      border-top: 1px solid var(--line);
+      color: var(--fg3);
+      font: 11px/1.5 var(--mono);
+    }}
+    @media (max-width: 700px) {{
+      .nav-shell {{ padding: 0 14px; gap: 12px; }}
+      .tab-list {{ justify-content: flex-start; }}
+      main {{ padding-inline: 14px; }}
+      .tab-panel {{ padding-top: 30px; }}
+      .overview-intro {{ align-items: flex-start; flex-direction: column; gap: 8px; }}
+      .receipt-grid, .state-grid, .journey-grid {{ grid-template-columns: 1fr; }}
       .health-panel {{ grid-template-columns: 1fr; }}
       .setting-row {{ grid-template-columns: 1fr; }}
       .setting-action {{ min-width: 0; align-items: flex-start; }}
       .setting-status {{ text-align: left; }}
       .handoff-button {{ align-items: flex-start; flex-direction: column; }}
-      pre {{ padding: 2.8rem 0 0; }}
+      pre {{ padding: 42px 0 0; }}
     }}
   </style>
 </head>
 <body>
+  <nav class="topbar" aria-label="Dashboard">
+    <div class="nav-shell">
+      <span class="wordmark" aria-label="Dex">dex<span class="wordmark-dot">.</span></span>
+      <div class="tab-list" role="tablist" aria-label="Dashboard sections">
+        <button type="button" role="tab" id="tab-overview" data-tab-target="overview" aria-selected="true" aria-controls="panel-overview">Overview</button>
+        <button type="button" role="tab" id="tab-journey" data-tab-target="journey" aria-selected="false" aria-controls="panel-journey" tabindex="-1">Journey</button>
+        <button type="button" role="tab" id="tab-settings" data-tab-target="settings" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button>
+        <button type="button" role="tab" id="tab-history" data-tab-target="history" aria-selected="false" aria-controls="panel-history" tabindex="-1">History</button>
+      </div>
+    </div>
+  </nav>
   <main>
-    <header>
-      <p class="kicker">Local overview</p>
-      <h1>Your Dex</h1>
-      {identity}
-      <p class="generated-date">{_escape(_display_date(data))}</p>
-    </header>
-    {_render_receipt(data)}
-    {_render_observations(observations)}
-    {suggestion}
-    {journey_section}
-    {_render_state(data)}
-    {history_section}
-    {settings_section}
+    <section class="tab-panel" id="panel-overview" data-tab="overview" role="tabpanel" aria-labelledby="tab-overview">
+      <header class="overview-intro">
+        <div>
+          <p class="kicker">Local overview</p>
+          <div class="greeting-line"><h1>Your Dex</h1>{identity}</div>
+        </div>
+        <p class="generated-date">{_escape(_display_date(data))}</p>
+      </header>
+      {_render_receipt(data)}
+      {_render_observations(observations)}
+      {suggestion}
+    </section>
+    <section class="tab-panel" id="panel-journey" data-tab="journey" role="tabpanel" aria-labelledby="tab-journey" hidden>
+      {journey_section}
+    </section>
+    <section class="tab-panel" id="panel-settings" data-tab="settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      {settings_section}
+    </section>
+    <section class="tab-panel" id="panel-history" data-tab="history" role="tabpanel" aria-labelledby="tab-history" hidden>
+      {history_section}
+    </section>
     <footer>
       <span>Generated locally by Dex · nothing leaves your machine</span>
       <span>{_escape(archive_note)}</span>
     </footer>
   </main>
   <script>
+    (() => {{
+      const tabs = Array.from(document.querySelectorAll('[role="tab"][data-tab-target]'));
+      const panels = Array.from(document.querySelectorAll('.tab-panel[data-tab]'));
+      const validTabs = new Set(tabs.map((tab) => tab.dataset.tabTarget));
+
+      function activateTab(name, focusTab = false) {{
+        const activeName = validTabs.has(name) ? name : 'overview';
+        tabs.forEach((tab) => {{
+          const active = tab.dataset.tabTarget === activeName;
+          tab.setAttribute('aria-selected', String(active));
+          tab.tabIndex = active ? 0 : -1;
+          if (active && focusTab) tab.focus();
+        }});
+        panels.forEach((panel) => {{
+          panel.hidden = panel.dataset.tab !== activeName;
+        }});
+      }}
+
+      tabs.forEach((tab, index) => {{
+        tab.addEventListener('click', () => {{
+          const name = tab.dataset.tabTarget;
+          activateTab(name);
+          if (window.location.hash !== '#' + name) window.location.hash = name;
+        }});
+        tab.addEventListener('keydown', (event) => {{
+          let nextIndex = null;
+          if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+          if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+          if (event.key === 'Home') nextIndex = 0;
+          if (event.key === 'End') nextIndex = tabs.length - 1;
+          if (nextIndex === null) return;
+          event.preventDefault();
+          const nextName = tabs[nextIndex].dataset.tabTarget;
+          activateTab(nextName, true);
+          if (window.location.hash !== '#' + nextName) window.location.hash = nextName;
+        }});
+      }});
+
+      window.addEventListener('hashchange', () => {{
+        activateTab(window.location.hash.slice(1));
+      }});
+      activateTab(window.location.hash.slice(1));
+    }})();
+    (() => {{
+      document.querySelectorAll('[data-journey-expand]').forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const group = button.closest('.journey-chips');
+          if (!group) return;
+          group.querySelectorAll('[data-journey-extra]').forEach((extra) => {{
+            extra.hidden = false;
+          }});
+          button.setAttribute('aria-expanded', 'true');
+          button.closest('.journey-more-item').hidden = true;
+        }});
+      }});
+    }})();
     (() => {{
       const button = document.getElementById('copyPrompt');
       const prompt = document.getElementById('tryPrompt');
@@ -724,10 +986,7 @@ def _snapshot(data: dict[str, Any], observations: dict[str, Any], now: datetime)
     integrations = _mapping(data.get("integrations"))
     integrations_on = _number(integrations, "enabled_count")
     if not integrations_on:
-        integrations_on = sum(
-            bool(_mapping(app).get("enabled"))
-            for app in _mapping(integrations.get("apps")).values()
-        )
+        integrations_on = sum(bool(_mapping(app).get("enabled")) for app in _mapping(integrations.get("apps")).values())
     return {
         "ts": _timestamp(now),
         "counts": {
@@ -735,11 +994,7 @@ def _snapshot(data: dict[str, Any], observations: dict[str, Any], now: datetime)
             "people": _number(data.get("people"), "total"),
             "meetings": _number(data.get("meetings"), "total"),
             "skills_used": len(
-                [
-                    name
-                    for name in _list(_mapping(data.get("skills")).get("used"))
-                    if isinstance(name, str)
-                ]
+                [name for name in _list(_mapping(data.get("skills")).get("used")) if isinstance(name, str)]
             ),
             "integrations_on": integrations_on,
         },
@@ -762,9 +1017,7 @@ def _history_section_data(
         raw_vault_age = _mapping(_mapping(data.get("meta")).get("vault_age")).get("age_days")
         vault_age = (
             raw_vault_age
-            if isinstance(raw_vault_age, int)
-            and not isinstance(raw_vault_age, bool)
-            and raw_vault_age >= 0
+            if isinstance(raw_vault_age, int) and not isinstance(raw_vault_age, bool) and raw_vault_age >= 0
             else None
         )
         trend_input = {
@@ -878,11 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
             observations,
             args.out,
             archive=not args.no_archive,
-            server_ctx=(
-                {"token": TOKEN_PLACEHOLDER, "port": PORT_PLACEHOLDER}
-                if args.with_settings
-                else None
-            ),
+            server_ctx=({"token": TOKEN_PLACEHOLDER, "port": PORT_PLACEHOLDER} if args.with_settings else None),
         )
     except OSError as error:
         print(f"Error: could not write dashboard output: {str(error).splitlines()[0]}", file=sys.stderr)
