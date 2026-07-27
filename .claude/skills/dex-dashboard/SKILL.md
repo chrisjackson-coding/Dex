@@ -102,6 +102,22 @@ fi
 If no opener exists, give the user the local HTML path and say it could not be opened
 automatically. Keep the page on this machine; this skill has no sharing path.
 
+## 3b. Interactive settings (only when asked)
+
+If the user asked to *change* settings ("open my settings", "let me toggle things",
+"interactive dashboard"), render with `--with-settings` added to the render command, then
+start the temporary local server and tell the user the page will close itself:
+
+```bash
+cd "$VAULT_PATH" && { .venv/bin/python core/dashboard/server.py --vault "$VAULT_PATH" --html "$DASHBOARD_HTML" --idle-timeout 900 2>/dev/null \
+  || python3 core/dashboard/server.py --vault "$VAULT_PATH" --html "$DASHBOARD_HTML" --idle-timeout 900; } &
+```
+
+Say one line: the settings page opened in the browser, changes save instantly to their
+Dex files, and the page shuts itself down when closed (or after 15 quiet minutes).
+Nothing keeps running afterwards. For a plain "show my dashboard", do NOT start the
+server — the static page has no settings panel.
+
 ## 4. Compare with the previous snapshot
 
 After rendering, inspect only the last two lines of
