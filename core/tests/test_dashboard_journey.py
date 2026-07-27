@@ -306,3 +306,44 @@ def test_render_journey_uses_nightfall_states_and_escapes_skill_data() -> None:
     assert "Daily &lt;plan&gt;" in page
     assert "Plan &lt;today&gt; safely." in page
     assert "<script>" not in page
+
+
+def test_render_journey_renders_at_most_five_escaped_skill_picks_with_copy_prompts() -> None:
+    section = _section()
+
+    page = section.render_journey(
+        {"counts": {"available": 0, "used": 0}, "groups": []},
+        picks=[
+            {
+                "skill": "week-<plan>",
+                "why": "You have <three> open priorities & need a reset.",
+            },
+            {"skill": "daily-plan", "why": "Start each day from the work already in Dex."},
+            {"skill": "meeting-prep", "why": "Your calendar has a full week of meetings."},
+            {"skill": "project-health", "why": "See where projects are drifting."},
+            {"skill": "week-review", "why": "Close the week with evidence."},
+            {"skill": "not-rendered", "why": "This sixth pick stays out of the row."},
+        ],
+    )
+
+    assert "Picked for you" in page
+    assert page.count('class="journey-pick-card"') == 5
+    assert "week-&lt;plan&gt;" in page
+    assert "You have &lt;three&gt; open priorities &amp; need a reset." in page
+    assert "week-<plan>" not in page
+    assert "not-rendered" not in page
+    assert 'id="copy-skill-pick-0"' in page
+    assert 'data-skill-copy-target="skill-pick-prompt-0"' in page
+    assert 'id="skill-pick-prompt-0"' in page
+    assert ">/week-&lt;plan&gt;</code>" in page
+    assert 'id="copy-skill-pick-4"' in page
+    assert 'id="copy-skill-pick-5"' not in page
+
+
+def test_render_journey_omits_skill_picks_without_any() -> None:
+    section = _section()
+
+    page = section.render_journey({"counts": {"available": 0, "used": 0}, "groups": []})
+
+    assert "Picked for you" not in page
+    assert "journey-pick-card" not in page

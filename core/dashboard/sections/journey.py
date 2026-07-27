@@ -78,7 +78,44 @@ def _territory(group: dict[str, Any], index: int) -> str:
       </div>"""
 
 
-def render_journey(journey: dict) -> str:
+def _skill_picks(value: Any) -> str:
+    picks = [
+        pick
+        for pick in _list(value)
+        if isinstance(pick, dict) and str(pick.get("skill") or "").strip()
+    ][:5]
+    if not picks:
+        return ""
+
+    cards = []
+    for index, pick in enumerate(picks):
+        skill = str(pick.get("skill") or "").strip()
+        why = str(pick.get("why") or "").strip()
+        skill_text = html.escape(skill, quote=True)
+        why_text = html.escape(why, quote=True)
+        prompt = html.escape(f"/{skill}", quote=True)
+        cards.append(
+            f"""
+          <article class="journey-pick-card">
+            <span class="journey-pick-skill">{skill_text}</span>
+            <p>{why_text}</p>
+            <div class="journey-pick-actions">
+              <code class="journey-pick-prompt" id="skill-pick-prompt-{index}" hidden>{prompt}</code>
+              <button type="button" class="journey-pick-copy" id="copy-skill-pick-{index}"
+                data-skill-copy-target="skill-pick-prompt-{index}"
+                data-skill-copy-status="skill-pick-status-{index}" aria-label="Copy /{skill_text}">Copy</button>
+              <span class="journey-pick-copy-status" id="skill-pick-status-{index}" aria-live="polite"></span>
+            </div>
+          </article>"""
+        )
+    return f"""
+      <div class="journey-picks" aria-labelledby="journey-picks-heading">
+        <h3 id="journey-picks-heading">Picked for you</h3>
+        <div class="journey-picks-grid">{"".join(cards)}</div>
+      </div>"""
+
+
+def render_journey(journey: dict, picks: list[dict[str, Any]] | None = None) -> str:
     """Render a Nightfall-styled HTML fragment for one capability journey."""
     source = _mapping(journey)
     counts = _mapping(source.get("counts"))
@@ -86,6 +123,7 @@ def render_journey(journey: dict) -> str:
     used = min(_number(counts.get("used")), available)
     groups = [group for group in _list(source.get("groups")) if isinstance(group, dict)]
     body = "".join(_territory(group, index) for index, group in enumerate(groups))
+    skill_picks = _skill_picks(picks)
     if not body:
         body = '<p class="quiet">No capabilities are installed in this Dex yet.</p>'
     return f"""
@@ -95,5 +133,6 @@ def render_journey(journey: dict) -> str:
         <h2 id="journey-heading">Your Dex, growing with you</h2>
         <p class="quiet">You use {used} of {available} capabilities.</p>
       </div>
+      {skill_picks}
       <div class="state-grid journey-grid">{body}</div>
     </section>"""

@@ -64,6 +64,14 @@ role, pillar, feature, count, or event details from this JSON—not placeholders
 made-up context. If no unchecked feature exists, do not invent one: use a
 getting-started or reflection suggestion grounded in the available profile and counts.
 
+Then pick 3–5 unused skills worth recommending — "picked for you", shown on the Journey
+tab. Same evidence bar as observations: each `why` must connect the skill to something
+real in this JSON (their role, a pillar by name, a ritual gap, a count, an integration).
+"Great for staying organized" fails the bar; "You have 64 person pages and 28 meetings
+with external people — `/relationship-radar` tells you who's going cold" passes. Prefer
+skills adjacent to what they already do; never recommend a skill the data shows they
+already use.
+
 Write this exact JSON shape to `$DASHBOARD_OBSERVATIONS`:
 
 ```json
@@ -73,13 +81,16 @@ Write this exact JSON shape to `$DASHBOARD_OBSERVATIONS`:
     "title": "One concise next step",
     "why": "Why this fits the user's real role, pillars, and usage.",
     "try_prompt": "A paste-ready prompt built from the user's real data."
-  }
+  },
+  "skill_picks": [
+    {"skill": "week-plan", "why": "One sentence grounded in this user's real data."}
+  ]
 }
 ```
 
 Validate and re-read the observations JSON. Confirm there are no extra keys, no more
-than three observations, exactly one suggestion, and no claim unsupported by the
-collector JSON.
+than three observations, exactly one suggestion, at most five skill picks, and no claim
+unsupported by the collector JSON.
 
 ## 3. Render, inspect, and open
 

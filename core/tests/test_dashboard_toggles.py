@@ -30,8 +30,30 @@ communication:
   formality: "professional_casual"  # options stay here
   directness: "balanced"
   detail_level: "concise"
+  coaching_style: "collaborative"
 entity_creation:
   mode: suggest
+entity_gardener:
+  enabled: true
+meeting_intelligence:
+  extract_customer_intel: false
+  extract_competitive_intel: false
+  extract_action_items: true
+  extract_decisions: true
+  extract_stakeholder_dynamics: false
+  extract_budget_timeline: false
+  extract_technical_decisions: false
+journaling:
+  morning: false
+  evening: false
+  weekly: true
+capabilities:
+  career:
+    enabled: false
+  companies:
+    enabled: true
+  quarter_goals:
+    enabled: false
 analytics:
   enabled: true  # anonymous counts only
 """
@@ -75,6 +97,41 @@ def _vault(tmp_path: Path) -> Path:
     return vault
 
 
+NEW_PROFILE_SETTING_CASES = (
+    ("detail_level", "concise", "comprehensive", "exhaustive", '  detail_level: "concise"\n'),
+    ("coaching_style", "collaborative", "challenging", "commanding", '  coaching_style: "collaborative"\n'),
+    ("entity_gardener", True, False, "false", "  enabled: true\n"),
+    ("journaling_morning", False, True, "true", "  morning: false\n"),
+    ("journaling_evening", False, True, "true", "  evening: false\n"),
+    ("journaling_weekly", True, False, "false", "  weekly: true\n"),
+    ("meeting_intel:extract_customer_intel", False, True, "true", "  extract_customer_intel: false\n"),
+    ("meeting_intel:extract_competitive_intel", False, True, "true", "  extract_competitive_intel: false\n"),
+    ("meeting_intel:extract_action_items", True, False, "false", "  extract_action_items: true\n"),
+    ("meeting_intel:extract_decisions", True, False, "false", "  extract_decisions: true\n"),
+    (
+        "meeting_intel:extract_stakeholder_dynamics",
+        False,
+        True,
+        "true",
+        "  extract_stakeholder_dynamics: false\n",
+    ),
+    ("meeting_intel:extract_budget_timeline", False, True, "true", "  extract_budget_timeline: false\n"),
+    (
+        "meeting_intel:extract_technical_decisions",
+        False,
+        True,
+        "true",
+        "  extract_technical_decisions: false\n",
+    ),
+)
+
+CAPABILITY_CASES = (
+    ("capability:career", "career", False, True),
+    ("capability:companies", "companies", True, False),
+    ("capability:quarter_goals", "quarter_goals", False, True),
+)
+
+
 def test_read_state_returns_only_vetted_values_with_file_stamps(tmp_path: Path) -> None:
     toggles = _toggles()
     vault = _vault(tmp_path)
@@ -83,13 +140,29 @@ def test_read_state_returns_only_vetted_values_with_file_stamps(tmp_path: Path) 
 
     assert snapshot.values == {
         "analytics_enabled": True,
+        "capability:career": False,
+        "capability:companies": True,
+        "capability:quarter_goals": False,
+        "coaching_style": "collaborative",
+        "detail_level": "concise",
+        "directness": "balanced",
         "entity_creation": "suggest",
+        "entity_gardener": True,
         "formality": "professional_casual",
         "health_telemetry": "pending",
         "integration:google.enabled": True,
         "integration:slack.enabled": False,
         "integration:todoist.enabled": True,
-        "directness": "balanced",
+        "journaling_evening": False,
+        "journaling_morning": False,
+        "journaling_weekly": True,
+        "meeting_intel:extract_action_items": True,
+        "meeting_intel:extract_budget_timeline": False,
+        "meeting_intel:extract_competitive_intel": False,
+        "meeting_intel:extract_customer_intel": False,
+        "meeting_intel:extract_decisions": True,
+        "meeting_intel:extract_stakeholder_dynamics": False,
+        "meeting_intel:extract_technical_decisions": False,
     }
     assert set(snapshot.stamps) == set(snapshot.values)
     assert all(stamp.mtime_ns > 0 for stamp in snapshot.stamps.values())
@@ -98,6 +171,270 @@ def test_read_state_returns_only_vetted_values_with_file_stamps(tmp_path: Path) 
     serialized = json.dumps(snapshot.values, sort_keys=True)
     assert "TODOIST_API_KEY" not in serialized
     assert "keep_me" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "initial", "_new_value", "_invalid_value", "_profile_line"),
+    NEW_PROFILE_SETTING_CASES,
+)
+def test_new_profile_registry_reads_each_present_setting(
+    tmp_path: Path,
+    setting_id: str,
+    initial: object,
+    _new_value: object,
+    _invalid_value: object,
+    _profile_line: str,
+) -> None:
+    snapshot = _toggles().ToggleEngine(_vault(tmp_path)).read_state()
+
+    assert snapshot.values[setting_id] == initial
+    assert setting_id in snapshot.stamps
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "_initial", "new_value", "_invalid_value", "profile_line"),
+    NEW_PROFILE_SETTING_CASES,
+)
+def test_new_profile_registry_writes_each_existing_anchor(
+    tmp_path: Path,
+    setting_id: str,
+    _initial: object,
+    new_value: object,
+    _invalid_value: object,
+    profile_line: str,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    engine = toggles.ToggleEngine(vault)
+    snapshot = engine.read_state()
+    profile = vault / "System" / "user-profile.yaml"
+    before = profile.read_text(encoding="utf-8")
+
+    result = engine.write(setting_id, new_value, expected=snapshot.stamps[setting_id])
+
+    assert result.old == snapshot.values[setting_id]
+    assert result.new == new_value
+    after = profile.read_text(encoding="utf-8")
+    assert after != before
+    assert after.count(profile_line) == before.count(profile_line) - 1
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "_initial", "_new_value", "invalid_value", "_profile_line"),
+    NEW_PROFILE_SETTING_CASES,
+)
+def test_new_profile_registry_rejects_each_invalid_value(
+    tmp_path: Path,
+    setting_id: str,
+    _initial: object,
+    _new_value: object,
+    invalid_value: object,
+    _profile_line: str,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    engine = toggles.ToggleEngine(vault)
+    snapshot = engine.read_state()
+    profile = vault / "System" / "user-profile.yaml"
+    before = profile.read_bytes()
+
+    with pytest.raises(toggles.ToggleValidationError):
+        engine.write(setting_id, invalid_value, expected=snapshot.stamps[setting_id])
+
+    assert profile.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "_initial", "new_value", "_invalid_value", "profile_line"),
+    NEW_PROFILE_SETTING_CASES,
+)
+def test_new_profile_registry_omits_each_absent_key(
+    tmp_path: Path,
+    setting_id: str,
+    _initial: object,
+    new_value: object,
+    _invalid_value: object,
+    profile_line: str,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    profile = vault / "System" / "user-profile.yaml"
+    profile.write_text(
+        profile.read_text(encoding="utf-8").replace(profile_line, "", 1),
+        encoding="utf-8",
+    )
+    engine = toggles.ToggleEngine(vault)
+
+    snapshot = engine.read_state()
+
+    assert setting_id not in snapshot.values
+    assert setting_id not in snapshot.stamps
+    assert setting_id not in snapshot.unavailable
+    with pytest.raises(
+        toggles.ToggleValidationError,
+        match=r"^That setting is not present in this Dex's files yet\.$",
+    ):
+        engine.write(setting_id, new_value, expected=None)
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "room", "initial", "new_value"),
+    CAPABILITY_CASES,
+)
+def test_capability_registry_reads_via_enabled_and_writes_via_set_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    setting_id: str,
+    room: str,
+    initial: bool,
+    new_value: bool,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    real_enabled = toggles.capabilities.enabled
+    enabled_calls: list[tuple[str, Path]] = []
+    set_calls: list[tuple[str, bool, Path]] = []
+
+    def enabled(candidate: str, *, profile_path: Path) -> bool:
+        enabled_calls.append((candidate, profile_path))
+        return real_enabled(candidate, profile_path=profile_path)
+
+    def set_enabled(candidate: str, value: bool, *, vault_root: Path) -> dict[str, object]:
+        set_calls.append((candidate, value, vault_root))
+        return {"room": candidate, "enabled": value}
+
+    monkeypatch.setattr(toggles.capabilities, "enabled", enabled)
+    monkeypatch.setattr(toggles.capabilities, "set_enabled", set_enabled)
+    engine = toggles.ToggleEngine(vault)
+
+    snapshot = engine.read_state()
+    result = engine.write(setting_id, new_value, expected=snapshot.stamps[setting_id])
+
+    assert snapshot.values[setting_id] is initial
+    assert (room, vault / "System" / "user-profile.yaml") in enabled_calls
+    assert set_calls == [(room, new_value, vault.resolve())]
+    assert result.old is initial
+    assert result.new is new_value
+    audit = json.loads(
+        (vault / "System" / ".dex" / "dashboard" / "audit.jsonl").read_text(encoding="utf-8")
+    )
+    assert audit["setting_id"] == setting_id
+    assert audit["old"] is initial
+    assert audit["new"] is new_value
+
+
+@pytest.mark.parametrize(("setting_id", "room", "_initial", "_new_value"), CAPABILITY_CASES)
+def test_capability_registry_rejects_invalid_values_without_calling_set_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    setting_id: str,
+    room: str,
+    _initial: bool,
+    _new_value: bool,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    engine = toggles.ToggleEngine(vault)
+    snapshot = engine.read_state()
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        toggles.capabilities,
+        "set_enabled",
+        lambda *args, **kwargs: calls.append((*args, kwargs)),
+    )
+
+    with pytest.raises(toggles.ToggleValidationError):
+        engine.write(setting_id, "true", expected=snapshot.stamps[setting_id])
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(("setting_id", "room", "_initial", "_new_value"), CAPABILITY_CASES)
+def test_absent_capability_key_reads_its_safe_contract_default(
+    tmp_path: Path,
+    setting_id: str,
+    room: str,
+    _initial: bool,
+    _new_value: bool,
+) -> None:
+    vault = _vault(tmp_path)
+    profile = vault / "System" / "user-profile.yaml"
+    profile.write_text(
+        profile.read_text(encoding="utf-8").replace(
+            f"  {room}:\n    enabled: {'true' if room == 'companies' else 'false'}\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = _toggles().ToggleEngine(vault).read_state()
+
+    assert snapshot.values[setting_id] is False
+    assert setting_id in snapshot.stamps
+
+
+def test_capability_api_errors_are_plain_toggle_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    engine = toggles.ToggleEngine(vault)
+    snapshot = engine.read_state()
+
+    def fail(*_args, **_kwargs) -> None:
+        raise RuntimeError("NEVER_EXPOSE_THIS_INTERNAL_PATH")
+
+    monkeypatch.setattr(toggles.capabilities, "set_enabled", fail)
+
+    with pytest.raises(toggles.ToggleError) as raised:
+        engine.write(
+            "capability:career",
+            True,
+            expected=snapshot.stamps["capability:career"],
+        )
+
+    assert "capability" in str(raised.value).lower()
+    assert "NEVER_EXPOSE" not in str(raised.value)
+
+
+def test_capability_write_rechecks_the_profile_before_calling_set_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    profile = vault / "System" / "user-profile.yaml"
+    engine = toggles.ToggleEngine(vault)
+    snapshot = engine.read_state()
+    set_calls: list[tuple[object, ...]] = []
+
+    def edit_during_read(_room: str, *, profile_path: Path) -> bool:
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8").replace(
+                'name: "Alex Example"',
+                'name: "Externally Changed"',
+            ),
+            encoding="utf-8",
+        )
+        return False
+
+    monkeypatch.setattr(toggles.capabilities, "enabled", edit_during_read)
+    monkeypatch.setattr(
+        toggles.capabilities,
+        "set_enabled",
+        lambda *args, **kwargs: set_calls.append((*args, kwargs)),
+    )
+
+    with pytest.raises(toggles.ToggleConflictError, match="refresh"):
+        engine.write(
+            "capability:career",
+            True,
+            expected=snapshot.stamps["capability:career"],
+        )
+
+    assert set_calls == []
+    assert 'name: "Externally Changed"' in profile.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("requested_value", ["off", "always"])

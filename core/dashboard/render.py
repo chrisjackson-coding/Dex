@@ -348,7 +348,7 @@ def render_dashboard_html(
     identity = f'<span class="user-name">for {_escape(name)}</span>' if name else ""
     archive_note = f"snapshot #{archive_count} saved" if archived else "snapshot not saved"
     suggestion = _render_suggestion(observations)
-    journey_section = render_journey(journey or {})
+    journey_section = render_journey(journey or {}, picks=observations.get("skill_picks"))
     history_section = render_history(history_data or {}) or _render_empty_history()
     server_meta = ""
     settings_script = ""
@@ -643,6 +643,52 @@ def render_dashboard_html(
       align-items: start;
       gap: 12px;
     }}
+    .journey-picks {{ margin: 0 0 20px; }}
+    .journey-picks h3 {{ margin: 0 0 10px; color: var(--fg); }}
+    .journey-picks-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+    }}
+    .journey-pick-card {{
+      display: flex;
+      min-width: 0;
+      min-height: 146px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      flex-direction: column;
+      align-items: flex-start;
+      background: var(--surface);
+    }}
+    .journey-pick-skill {{
+      padding: 4px 7px;
+      border: 1px solid var(--accent-dim);
+      border-radius: 3px;
+      background: var(--accent-bg);
+      color: var(--accent);
+      font: 12px/1.35 var(--mono);
+      overflow-wrap: anywhere;
+    }}
+    .journey-pick-card p {{ margin: 10px 0 14px; color: var(--fg2); font-size: 13px; }}
+    .journey-pick-actions {{
+      display: flex;
+      width: 100%;
+      min-height: 29px;
+      margin-top: auto;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }}
+    .journey-pick-copy {{
+      padding: 5px 9px;
+      border-color: var(--line2);
+      color: var(--fg2);
+      font: 12px/1.2 var(--mono);
+    }}
+    .journey-pick-copy:hover {{ border-color: var(--accent); color: var(--accent); }}
+    .journey-pick-prompt {{ display: none; }}
+    .journey-pick-copy-status {{ color: var(--fg3); font: 11px/1.4 var(--mono); }}
     .territory {{ min-width: 0; }}
     .journey-chips {{
       display: flex;
@@ -931,9 +977,7 @@ def render_dashboard_html(
       }});
     }})();
     (() => {{
-      const button = document.getElementById('copyPrompt');
-      const prompt = document.getElementById('tryPrompt');
-      const status = document.getElementById('copyStatus');
+      const wireCopy = (button, prompt, status) => {{
       if (!button || !prompt) return;
       const markCopied = () => {{
         if (status) status.textContent = 'Copied';
@@ -955,6 +999,18 @@ def render_dashboard_html(
           selection.removeAllRanges();
           markCopied();
         }}
+      }});
+      }};
+
+      wireCopy(
+        document.getElementById('copyPrompt'),
+        document.getElementById('tryPrompt'),
+        document.getElementById('copyStatus'),
+      );
+      document.querySelectorAll('[data-skill-copy-target]').forEach((button) => {{
+        const prompt = document.getElementById(button.dataset.skillCopyTarget);
+        const status = document.getElementById(button.dataset.skillCopyStatus);
+        wireCopy(button, prompt, status);
       }});
     }})();
     {settings_script}

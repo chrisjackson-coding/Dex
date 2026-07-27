@@ -288,6 +288,28 @@ def test_journey_collapses_after_twelve_chips_used_first_and_expands_inline() ->
     assert "extra.hidden = false" in page
 
 
+def test_journey_receives_skill_picks_from_observations() -> None:
+    render = _renderer()
+
+    page = render.render_dashboard_html(
+        _data(),
+        {
+            "skill_picks": [
+                {
+                    "skill": "week-plan",
+                    "why": "Your open priorities need a weekly reset.",
+                }
+            ]
+        },
+        journey=_journey_data(),
+    )
+
+    assert "Picked for you" in page
+    assert "week-plan" in page
+    assert "Your open priorities need a weekly reset." in page
+    assert 'data-skill-copy-target="skill-pick-prompt-0"' in page
+
+
 def test_history_tab_has_a_quiet_first_snapshot_empty_state() -> None:
     render = _renderer()
 
@@ -310,15 +332,14 @@ def test_live_settings_are_grouped_without_changing_wire_placeholders() -> None:
     )
 
     settings = page[page.index('id="settings"') : page.index('id="history"')]
-    for label in ("Privacy", "Communication", "Connections", "Behavior"):
+    for label in ("Privacy", "Communication", "Capabilities", "Meetings", "Journaling", "Connections"):
         assert f'<h3 class="settings-group-label">{label}</h3>' in settings
     assert settings.index("Anonymous product analytics") < settings.index("Communication")
     assert settings.index("Formality") < settings.index("Connections")
     assert settings.index("Existing integrations") < settings.index("Set up something new")
-    assert settings.index("New people and companies") > settings.index("Behavior")
+    assert settings.index("New people and companies") > settings.index("Meetings")
     assert page.count("__DEX_DASHBOARD_TOKEN__") == 1
     assert page.count("__DEX_DASHBOARD_PORT__") == 1
-    assert settings_section._grouped_controls([("future-setting", "row")])["Behavior"] == ["row"]
 
 
 def test_new_section_fragments_have_css_for_every_emitted_class() -> None:

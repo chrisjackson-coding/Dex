@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from core import capabilities
 from core.paths import (
     DEX_RUNTIME_DIR,
     INTEGRATION_CONFIG_FILE,
@@ -24,10 +25,14 @@ from core.paths import (
 
 FORMALITY_VALUES = ("formal", "professional_casual", "casual")
 DIRECTNESS_VALUES = ("very_direct", "balanced", "supportive")
+DETAIL_LEVEL_VALUES = ("concise", "balanced", "comprehensive")
+COACHING_STYLE_VALUES = ("encouraging", "collaborative", "challenging")
 ENTITY_CREATION_VALUES = ("auto", "suggest", "off")
 HEALTH_TELEMETRY_VALUES = ("opted-in", "opted-out")
 HEALTH_TELEMETRY_STORED_VALUES = ("pending", *HEALTH_TELEMETRY_VALUES)
 INTEGRATION_SETTING = re.compile(r"^integration:(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)\.enabled$")
+MEETING_INTEL_SETTING = re.compile(r"^meeting_intel:(?P<name>[A-Za-z_][A-Za-z0-9_-]*)$")
+CAPABILITY_ROOMS = ("career", "companies", "quarter_goals")
 YAML_LINE = re.compile(
     r"^(?P<prefix>(?P<indent> *)"
     r"(?P<key>[A-Za-z_][A-Za-z0-9_-]*):[ \t]*)"
@@ -96,6 +101,51 @@ TOGGLE_REGISTRY = {
         "enum",
         DIRECTNESS_VALUES,
     ),
+    "detail_level": ToggleSpec(
+        "profile",
+        ("communication", "detail_level"),
+        "enum",
+        DETAIL_LEVEL_VALUES,
+    ),
+    "coaching_style": ToggleSpec(
+        "profile",
+        ("communication", "coaching_style"),
+        "enum",
+        COACHING_STYLE_VALUES,
+    ),
+    "entity_gardener": ToggleSpec(
+        "profile",
+        ("entity_gardener", "enabled"),
+        "bool",
+        (False, True),
+    ),
+    "journaling_morning": ToggleSpec(
+        "profile",
+        ("journaling", "morning"),
+        "bool",
+        (False, True),
+    ),
+    "journaling_evening": ToggleSpec(
+        "profile",
+        ("journaling", "evening"),
+        "bool",
+        (False, True),
+    ),
+    "journaling_weekly": ToggleSpec(
+        "profile",
+        ("journaling", "weekly"),
+        "bool",
+        (False, True),
+    ),
+    **{
+        f"capability:{room}": ToggleSpec(
+            "capability",
+            ("capabilities", room, "enabled"),
+            "bool",
+            (False, True),
+        )
+        for room in CAPABILITY_ROOMS
+    },
     "health_telemetry": ToggleSpec(
         "usage",
         None,
@@ -304,6 +354,74 @@ def _profile_values(
     return values, anchors, unavailable
 
 
+def _meeting_intel_values(
+    text: str,
+) -> tuple[dict[str, bool], dict[str, _YamlEntry], dict[str, str]]:
+    candidates: dict[str, list[_YamlEntry]] = {}
+    for entry in _yaml_entries(text):
+        if len(entry.path) != 2 or entry.path[0] != "meeting_intelligence":
+            continue
+        name = entry.path[1]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name) is None:
+            continue
+        candidates.setdefault(name, []).append(entry)
+
+    values: dict[str, bool] = {}
+    anchors: dict[str, _YamlEntry] = {}
+    unavailable: dict[str, str] = {}
+    for name, matches in sorted(candidates.items()):
+        setting_id = f"meeting_intel:{name}"
+        try:
+            if len(matches) != 1:
+                raise ToggleSchemaError(
+                    f"meeting intelligence {name} must appear exactly once; "
+                    "refresh after fixing the file."
+                )
+            value = _parse_scalar(matches[0].scalar)
+            if not isinstance(value, bool):
+                raise ToggleSchemaError(
+                    f"meeting intelligence {name} must be true or false; "
+                    "refresh after fixing the file."
+                )
+        except ToggleSchemaError as error:
+            unavailable[setting_id] = str(error)
+            continue
+        values[setting_id] = value
+        anchors[setting_id] = matches[0]
+    return values, anchors, unavailable
+
+
+def _meeting_spec(setting_id: str) -> ToggleSpec | None:
+    match = MEETING_INTEL_SETTING.fullmatch(setting_id)
+    if match is None:
+        return None
+    return ToggleSpec(
+        "profile",
+        ("meeting_intelligence", match.group("name")),
+        "bool",
+        (False, True),
+    )
+
+
+def _capability_values(
+    profile_path: Path,
+) -> tuple[dict[str, bool], dict[str, str]]:
+    values: dict[str, bool] = {}
+    unavailable: dict[str, str] = {}
+    for room in CAPABILITY_ROOMS:
+        setting_id = f"capability:{room}"
+        try:
+            values[setting_id] = capabilities.enabled(
+                room,
+                profile_path=profile_path,
+            )
+        except Exception:
+            unavailable[setting_id] = (
+                "This capability is unavailable until its local configuration is fixed."
+            )
+    return values, unavailable
+
+
 def _integration_values(
     text: str,
 ) -> tuple[dict[str, bool], dict[str, _YamlEntry], dict[str, str]]:
@@ -464,9 +582,26 @@ class ToggleEngine:
         if profile_path.is_file():
             profile_text, profile_stamp = _read_stamped(profile_path)
             profile_values, _anchors, profile_unavailable = _profile_values(profile_text)
+            meeting_values, _meeting_anchors, meeting_unavailable = _meeting_intel_values(
+                profile_text
+            )
+            capability_values, capability_unavailable = _capability_values(profile_path)
             values.update(profile_values)
-            stamps.update({setting_id: profile_stamp for setting_id in profile_values})
+            values.update(meeting_values)
+            values.update(capability_values)
+            stamps.update(
+                {
+                    setting_id: profile_stamp
+                    for setting_id in (
+                        *profile_values,
+                        *meeting_values,
+                        *capability_values,
+                    )
+                }
+            )
             unavailable.update(profile_unavailable)
+            unavailable.update(meeting_unavailable)
+            unavailable.update(capability_unavailable)
 
         usage_path = _usage_log_file(self.vault)
         if usage_path.is_file():
@@ -499,7 +634,7 @@ class ToggleEngine:
         *,
         expected: FileStamp | None,
     ) -> WriteResult:
-        spec = TOGGLE_REGISTRY.get(setting_id)
+        spec = TOGGLE_REGISTRY.get(setting_id) or _meeting_spec(setting_id)
         integration_match = INTEGRATION_SETTING.fullmatch(setting_id)
         if spec is None and integration_match is None:
             raise ToggleValidationError("That setting is not available from the dashboard.")
@@ -515,6 +650,15 @@ class ToggleEngine:
             raise ToggleValidationError("That setting is not available from the dashboard.")
 
         current_text, current_stamp = _read_stamped(path)
+        if spec is not None and spec.file_kind == "capability":
+            return self._write_capability(
+                setting_id,
+                value,
+                spec,
+                path,
+                current_stamp,
+                expected,
+            )
         old, changed_text = self._change_text(
             setting_id,
             value,
@@ -542,11 +686,50 @@ class ToggleEngine:
         return WriteResult(setting_id, old, value, new_stamp)
 
     def _path_for_kind(self, file_kind: str) -> Path:
-        if file_kind == "profile":
+        if file_kind in {"profile", "capability"}:
             return _at(self.vault, USER_PROFILE_FILE)
         if file_kind == "usage":
             return _usage_log_file(self.vault)
         raise ToggleValidationError("That setting is not available from the dashboard.")
+
+    def _write_capability(
+        self,
+        setting_id: str,
+        value: Any,
+        spec: ToggleSpec,
+        profile_path: Path,
+        current_stamp: FileStamp,
+        expected: FileStamp | None,
+    ) -> WriteResult:
+        _validate_requested_value(setting_id, value, spec)
+        room = setting_id.partition(":")[2]
+        try:
+            old = capabilities.enabled(room, profile_path=profile_path)
+        except Exception as error:
+            raise ToggleError(
+                "Dex could not read that capability safely. Refresh and try again."
+            ) from error
+        if expected is None or current_stamp != expected:
+            raise ToggleConflictError(
+                "The settings changed; refresh the dashboard and try again."
+            )
+        if _stamp(profile_path) != current_stamp:
+            raise ToggleConflictError(
+                "The settings changed; refresh the dashboard and try again."
+            )
+        try:
+            capabilities.set_enabled(
+                room,
+                value,
+                vault_root=self.vault,
+            )
+        except Exception as error:
+            raise ToggleError(
+                "Dex could not change that capability safely."
+            ) from error
+        new_stamp = _stamp(profile_path)
+        self._append_audit(setting_id, old, value)
+        return WriteResult(setting_id, old, value, new_stamp)
 
     def _change_text(
         self,
@@ -557,14 +740,25 @@ class ToggleEngine:
         integration_match: re.Match[str] | None,
     ) -> tuple[Any, str]:
         if spec is not None and spec.file_kind == "profile":
-            values, anchors, unavailable = _profile_values(current_text)
+            meeting_setting = MEETING_INTEL_SETTING.fullmatch(setting_id) is not None
+            if meeting_setting:
+                values, anchors, unavailable = _meeting_intel_values(current_text)
+            else:
+                values, anchors, unavailable = _profile_values(current_text)
             if setting_id in unavailable:
                 raise ToggleSchemaError(unavailable[setting_id])
             if setting_id not in anchors:
                 raise ToggleValidationError("That setting is not present in this Dex's files yet.")
             _validate_requested_value(setting_id, value, spec)
             changed = _replace_yaml_entry(current_text, anchors[setting_id], value)
-            _changed_values, changed_anchors, changed_unavailable = _profile_values(changed)
+            if meeting_setting:
+                _changed_values, changed_anchors, changed_unavailable = (
+                    _meeting_intel_values(changed)
+                )
+            else:
+                _changed_values, changed_anchors, changed_unavailable = _profile_values(
+                    changed
+                )
             if setting_id in changed_unavailable or setting_id not in changed_anchors:
                 raise ToggleSchemaError("The profile shape changed unexpectedly. Refresh and try again.")
             if not _same_yaml_keys(current_text, changed):

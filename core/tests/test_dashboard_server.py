@@ -374,11 +374,37 @@ def test_settings_section_escapes_data_and_returns_interactive_javascript() -> N
     data = {
         "integrations": {
             "apps": {
+                "slack": {"enabled": True},
                 "Slack & Co": {"enabled": True},
                 '<script>alert("x")</script>': {"enabled": False},
             }
         },
-        "profile": {"api_key": "NEVER_RENDER"},
+        "profile": {
+            "api_key": "NEVER_RENDER",
+            "communication": {
+                "formality": "professional_casual",
+                "directness": "balanced",
+                "detail_level": "concise",
+                "coaching_style": "collaborative",
+            },
+            "analytics": {"enabled": True},
+            "entity_creation": {"mode": "suggest"},
+            "entity_gardener": {"enabled": True},
+            "meeting_intelligence": {
+                "extract_action_items": True,
+                "extract_decisions": False,
+            },
+            "journaling": {
+                "morning": False,
+                "evening": False,
+                "weekly": True,
+            },
+            "capabilities": {
+                "career": {"enabled": False},
+                "companies": {"enabled": True},
+                "quarter_goals": {"enabled": False},
+            },
+        },
     }
 
     fragment, script = settings.render(
@@ -394,7 +420,44 @@ def test_settings_section_escapes_data_and_returns_interactive_javascript() -> N
     assert 'data-setting-id="entity_creation"' in fragment
     assert 'data-setting-id="formality"' in fragment
     assert 'data-setting-id="directness"' in fragment
+    assert 'data-setting-id="detail_level"' in fragment
+    assert 'data-setting-id="coaching_style"' in fragment
     assert 'data-setting-id="health_telemetry"' in fragment
+    assert 'data-setting-id="capability:career"' in fragment
+    assert 'data-setting-id="capability:companies"' in fragment
+    assert 'data-setting-id="capability:quarter_goals"' in fragment
+    assert 'data-setting-id="meeting_intel:extract_action_items"' in fragment
+    assert 'data-setting-id="meeting_intel:extract_decisions"' in fragment
+    assert 'data-setting-id="entity_gardener"' in fragment
+    assert 'data-setting-id="journaling_morning"' in fragment
+    assert 'data-setting-id="journaling_evening"' in fragment
+    assert 'data-setting-id="journaling_weekly"' in fragment
+    assert 'data-setting-id="integration:slack.enabled"' in fragment
+    group_names = [
+        "privacy",
+        "communication",
+        "capabilities",
+        "meetings",
+        "journaling",
+        "connections",
+    ]
+    positions = [
+        fragment.index(f'data-settings-group="{group_name}"')
+        for group_name in group_names
+    ]
+    assert positions == sorted(positions)
+    for label in (
+        "Privacy",
+        "Communication",
+        "Capabilities",
+        "Meetings",
+        "Journaling",
+        "Connections",
+    ):
+        assert f'<h3 class="settings-group-label">{label}</h3>' in fragment
+    assert "Behavior" not in fragment
+    assert "Career coaching, evidence capture and resume tools" in fragment
+    assert "unlocks a set of skills" in fragment
     assert "Slack &amp; Co" in fragment
     assert '<script>alert("x")</script>' not in fragment
     assert "NEVER_RENDER" not in fragment
@@ -411,6 +474,66 @@ def test_settings_section_escapes_data_and_returns_interactive_javascript() -> N
     assert "undo" in script.lower()
     assert "\\u003c/script\\u003e" in script
     assert "</script>" not in script
+
+
+def test_settings_section_has_the_same_full_inventory_read_only_without_a_server() -> None:
+    settings = _settings()
+    data = {
+        "profile": {
+            "communication": {
+                "formality": "professional_casual",
+                "directness": "balanced",
+                "detail_level": "comprehensive",
+                "coaching_style": "challenging",
+            },
+            "analytics": {"enabled": True},
+            "entity_creation": {"mode": "auto"},
+            "entity_gardener": {"enabled": False},
+            "meeting_intelligence": {
+                "extract_action_items": True,
+                "custom_follow_up_signal": False,
+            },
+            "journaling": {"morning": True, "evening": False, "weekly": True},
+            "capabilities": {
+                "career": {"enabled": True},
+                "companies": {"enabled": False},
+                "quarter_goals": {"enabled": True},
+            },
+        },
+        "integrations": {"apps": {"slack": {"enabled": True}}},
+    }
+
+    fragment, script = settings.render(data, None)
+
+    assert script == ""
+    for setting_id in (
+        "analytics_enabled",
+        "health_telemetry",
+        "formality",
+        "directness",
+        "detail_level",
+        "coaching_style",
+        "capability:career",
+        "capability:companies",
+        "capability:quarter_goals",
+        "meeting_intel:extract_action_items",
+        "meeting_intel:custom_follow_up_signal",
+        "entity_creation",
+        "entity_gardener",
+        "journaling_morning",
+        "journaling_evening",
+        "journaling_weekly",
+        "integration:slack.enabled",
+    ):
+        assert f'data-setting-id="{setting_id}"' in fragment
+    assert "Read-only" in fragment
+    assert "fetch(" not in fragment
+    assert 'value="comprehensive" selected' in fragment
+    assert 'id="setting-capability:career"' in fragment
+    assert 'id="setting-capability:career"\n            type="checkbox"' in fragment
+    assert 'data-setting-id="capability:career"' in fragment
+    assert "checked" in fragment
+    assert fragment.count('data-settings-group="') == 6
 
 
 def test_run_server_prints_the_tokened_url_once_and_flushes_before_opening_browser(
