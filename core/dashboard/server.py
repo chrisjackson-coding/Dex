@@ -25,6 +25,7 @@ from core.dashboard.toggles import (
     ToggleConflictError,
     ToggleEngine,
     ToggleError,
+    ToggleSchemaError,
 )
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -87,10 +88,10 @@ class ToggleSession:
         self.snapshot: StateSnapshot | None = None
         self._lock = threading.Lock()
 
-    def read_state(self) -> dict[str, Any]:
+    def read_state(self) -> StateSnapshot:
         with self._lock:
             self.snapshot = self.engine.read_state()
-            return dict(self.snapshot.values)
+            return self.snapshot
 
     def write(self, setting_id: str, value: Any):
         with self._lock:
@@ -104,7 +105,11 @@ class ToggleSession:
                 candidate_id: result.stamp if stamp == expected else stamp
                 for candidate_id, stamp in self.snapshot.stamps.items()
             }
-            self.snapshot = StateSnapshot(values=values, stamps=stamps)
+            self.snapshot = StateSnapshot(
+                values=values,
+                stamps=stamps,
+                unavailable=dict(self.snapshot.unavailable),
+            )
             return result
 
 
@@ -147,7 +152,14 @@ class DashboardApplication:
             if method == "GET" and path == "/":
                 return self._serve_page()
             if method == "GET" and path == "/api/state":
-                return _json_response(200, {"settings": self.session.read_state()})
+                snapshot = self.session.read_state()
+                return _json_response(
+                    200,
+                    {
+                        "settings": snapshot.values,
+                        "unavailable": snapshot.unavailable,
+                    },
+                )
             if method == "POST" and path == "/api/toggle":
                 return self._toggle(body)
             if method == "POST" and path == "/api/close":
@@ -157,7 +169,12 @@ class DashboardApplication:
                 return _json_response(405, {"error": "Method not allowed"})
             return _json_response(404, {"error": "Not found"})
         except ToggleError as error:
-            if error.status_code == 409:
+            scoped_schema_write = (
+                method == "POST"
+                and path == "/api/toggle"
+                and isinstance(error, ToggleSchemaError)
+            )
+            if error.status_code == 409 and not scoped_schema_write:
                 self.session.snapshot = None
             return _json_response(error.status_code, {"error": str(error)})
         except (OSError, UnicodeError):

@@ -183,6 +183,7 @@ def test_state_is_re_read_and_toggle_write_returns_undo_values(tmp_path: Path) -
 
     assert state_response.status == 200
     assert _json(state_response)["settings"]["formality"] == "professional_casual"
+    assert _json(state_response)["unavailable"] == {}
     assert toggle_response.status == 200
     assert _json(toggle_response) == {
         "ok": True,
@@ -193,6 +194,83 @@ def test_state_is_re_read_and_toggle_write_returns_undo_values(tmp_path: Path) -
     assert 'formality: "casual"' in (vault / "System" / "user-profile.yaml").read_text(encoding="utf-8")
     refreshed = app.handle("GET", "/api/state?t=correct-token")
     assert _json(refreshed)["settings"]["formality"] == "casual"
+
+
+def test_missing_entity_creation_keeps_other_settings_live_and_returns_400_on_write(
+    tmp_path: Path,
+) -> None:
+    app, vault = _app(tmp_path)
+    profile = vault / "System" / "user-profile.yaml"
+    profile.write_text(
+        profile.read_text(encoding="utf-8").replace(
+            "entity_creation:\n  mode: suggest\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    state_response = app.handle("GET", "/api/state?t=correct-token")
+    state = _json(state_response)
+
+    assert state_response.status == 200
+    assert state["settings"]["formality"] == "professional_casual"
+    assert "entity_creation" not in state["settings"]
+    assert "entity_creation" not in state["unavailable"]
+
+    formality_response = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        b'{"setting_id":"formality","value":"casual"}',
+    )
+    entity_response = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        b'{"setting_id":"entity_creation","value":"off"}',
+    )
+
+    assert formality_response.status == 200
+    assert entity_response.status == 400
+    assert _json(entity_response) == {
+        "error": "That setting is not present in this Dex's files yet."
+    }
+
+
+def test_duplicated_setting_is_unavailable_without_blocking_other_writes(
+    tmp_path: Path,
+) -> None:
+    app, vault = _app(tmp_path)
+    profile = vault / "System" / "user-profile.yaml"
+    profile.write_text(
+        profile.read_text(encoding="utf-8").replace(
+            '  directness: "balanced"',
+            '  directness: "balanced"\n  directness: "supportive"',
+        ),
+        encoding="utf-8",
+    )
+
+    state_response = app.handle("GET", "/api/state?t=correct-token")
+    state = _json(state_response)
+
+    assert state_response.status == 200
+    assert state["settings"]["formality"] == "professional_casual"
+    assert "directness" not in state["settings"]
+    assert set(state["unavailable"]) == {"directness"}
+    assert "exactly once" in state["unavailable"]["directness"]
+
+    directness_response = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        b'{"setting_id":"directness","value":"supportive"}',
+    )
+    formality_response = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        b'{"setting_id":"formality","value":"casual"}',
+    )
+
+    assert directness_response.status == 409
+    assert "exactly once" in _json(directness_response)["error"]
+    assert formality_response.status == 200
 
 
 def test_successful_post_advances_only_the_cached_get_snapshot(
@@ -326,6 +404,8 @@ def test_settings_section_escapes_data_and_returns_interactive_javascript() -> N
     assert "/api/state" in script
     assert "/api/toggle" in script
     assert "/api/close" in script
+    assert "payload.unavailable" in script
+    assert "Not set up in this vault yet." in script
     assert "pagehide" in script
     assert "beforeunload" in script
     assert "undo" in script.lower()

@@ -94,9 +94,40 @@ def test_read_state_returns_only_vetted_values_with_file_stamps(tmp_path: Path) 
     assert set(snapshot.stamps) == set(snapshot.values)
     assert all(stamp.mtime_ns > 0 for stamp in snapshot.stamps.values())
     assert all(len(stamp.sha256) == 64 for stamp in snapshot.stamps.values())
+    assert snapshot.unavailable == {}
     serialized = json.dumps(snapshot.values, sort_keys=True)
     assert "TODOIST_API_KEY" not in serialized
     assert "keep_me" not in serialized
+
+
+@pytest.mark.parametrize("requested_value", ["off", "always"])
+def test_missing_profile_setting_is_omitted_while_other_settings_still_work(
+    tmp_path: Path,
+    requested_value: str,
+) -> None:
+    toggles = _toggles()
+    vault = _vault(tmp_path)
+    profile = vault / "System" / "user-profile.yaml"
+    profile.write_text(
+        _profile().replace("entity_creation:\n  mode: suggest\n", ""),
+        encoding="utf-8",
+    )
+    engine = toggles.ToggleEngine(vault)
+
+    snapshot = engine.read_state()
+
+    assert snapshot.values["formality"] == "professional_casual"
+    assert "entity_creation" not in snapshot.values
+    assert "entity_creation" not in snapshot.stamps
+    assert "entity_creation" not in snapshot.unavailable
+
+    engine.write("formality", "casual", expected=snapshot.stamps["formality"])
+
+    with pytest.raises(
+        toggles.ToggleValidationError,
+        match=r"^That setting is not present in this Dex's files yet\.$",
+    ):
+        engine.write("entity_creation", requested_value, expected=None)
 
 
 def test_profile_write_changes_one_scalar_and_appends_audit(tmp_path: Path) -> None:
@@ -273,23 +304,48 @@ def test_concurrent_edit_is_detected_by_sha_even_when_mtime_is_restored(
     assert not (vault / "System" / ".dex" / "dashboard" / "audit.jsonl").exists()
 
 
-def test_duplicate_or_malformed_anchor_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("replacement", "reason"),
+    [
+        (
+            '  directness: "balanced"\n  directness: "very_direct"',
+            "exactly once",
+        ),
+        ('  directness: "unrecognised"', "outside the supported schema"),
+    ],
+)
+def test_malformed_profile_setting_is_scoped_to_that_setting(
+    tmp_path: Path,
+    replacement: str,
+    reason: str,
+) -> None:
     toggles = _toggles()
     vault = _vault(tmp_path)
     profile = vault / "System" / "user-profile.yaml"
     profile.write_text(
         _profile().replace(
             '  directness: "balanced"',
-            '  directness: "balanced"\n  directness: "very_direct"',
+            replacement,
         ),
         encoding="utf-8",
     )
+    engine = toggles.ToggleEngine(vault)
 
-    with pytest.raises(toggles.ToggleSchemaError, match="exactly once"):
-        toggles.ToggleEngine(vault).read_state()
+    snapshot = engine.read_state()
+
+    assert snapshot.values["formality"] == "professional_casual"
+    assert "directness" not in snapshot.values
+    assert "directness" not in snapshot.stamps
+    assert set(snapshot.unavailable) == {"directness"}
+    assert reason in snapshot.unavailable["directness"]
+
+    with pytest.raises(toggles.ToggleSchemaError, match=reason):
+        engine.write("directness", "supportive", expected=None)
+
+    engine.write("formality", "casual", expected=snapshot.stamps["formality"])
 
 
-def test_ambiguous_integration_anchor_fails_closed(tmp_path: Path) -> None:
+def test_ambiguous_integration_anchor_is_scoped_to_that_setting(tmp_path: Path) -> None:
     toggles = _toggles()
     vault = _vault(tmp_path)
     config = vault / "System" / "integrations" / "config.yaml"
@@ -301,9 +357,18 @@ slack:
 """,
         encoding="utf-8",
     )
+    engine = toggles.ToggleEngine(vault)
+
+    snapshot = engine.read_state()
+
+    assert snapshot.values["integration:google.enabled"] is True
+    assert snapshot.values["integration:todoist.enabled"] is True
+    assert "integration:slack.enabled" not in snapshot.values
+    assert set(snapshot.unavailable) == {"integration:slack.enabled"}
+    assert "slack" in snapshot.unavailable["integration:slack.enabled"]
 
     with pytest.raises(toggles.ToggleSchemaError, match="slack"):
-        toggles.ToggleEngine(vault).read_state()
+        engine.write("integration:slack.enabled", True, expected=None)
 
 
 def test_atomic_replace_interruption_leaves_original_file_intact(tmp_path: Path) -> None:

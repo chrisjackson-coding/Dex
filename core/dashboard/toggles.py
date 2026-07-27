@@ -117,6 +117,7 @@ class FileStamp:
 class StateSnapshot:
     values: dict[str, Any]
     stamps: dict[str, FileStamp]
+    unavailable: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -276,37 +277,37 @@ def _validate_requested_value(setting_id: str, value: Any, spec: ToggleSpec) -> 
         raise ToggleValidationError(f"{setting_id} accepts only: {choices}.")
 
 
-def _profile_values(text: str) -> tuple[dict[str, Any], dict[str, _YamlEntry]]:
+def _profile_values(
+    text: str,
+) -> tuple[dict[str, Any], dict[str, _YamlEntry], dict[str, str]]:
     entries = _yaml_entries(text)
     by_path = _entry_map(entries)
     values: dict[str, Any] = {}
     anchors: dict[str, _YamlEntry] = {}
+    unavailable: dict[str, str] = {}
     for setting_id, spec in PROFILE_SCHEMA.items():
         assert spec.yaml_path is not None
-        entry = _require_one(by_path, spec.yaml_path, setting_id)
-        value = _parse_scalar(entry.scalar)
-        if not _value_is_allowed(value, spec):
-            raise ToggleSchemaError(
-                f"{setting_id} has a value outside the supported schema; refresh after fixing the file."
-            )
+        if not by_path.get(spec.yaml_path):
+            continue
+        try:
+            entry = _require_one(by_path, spec.yaml_path, setting_id)
+            value = _parse_scalar(entry.scalar)
+            if not _value_is_allowed(value, spec):
+                raise ToggleSchemaError(
+                    f"{setting_id} has a value outside the supported schema; refresh after fixing the file."
+                )
+        except ToggleSchemaError as error:
+            unavailable[setting_id] = str(error)
+            continue
         values[setting_id] = value
         anchors[setting_id] = entry
-    _reject_duplicate_yaml_paths(entries)
-    return values, anchors
+    return values, anchors, unavailable
 
 
-def _reject_duplicate_yaml_paths(entries: list[_YamlEntry]) -> None:
-    duplicates = [path for path, count in Counter(entry.path for entry in entries).items() if count > 1]
-    if duplicates:
-        label = ".".join(duplicates[0])
-        raise ToggleSchemaError(
-            f"{label} must appear exactly once before Dex can change settings; refresh after fixing the file."
-        )
-
-
-def _integration_values(text: str) -> tuple[dict[str, bool], dict[str, _YamlEntry]]:
+def _integration_values(
+    text: str,
+) -> tuple[dict[str, bool], dict[str, _YamlEntry], dict[str, str]]:
     entries = _yaml_entries(text)
-    _reject_duplicate_yaml_paths(entries)
     candidates: dict[str, list[_YamlEntry]] = {}
     for entry in entries:
         name: str | None = None
@@ -324,32 +325,52 @@ def _integration_values(text: str) -> tuple[dict[str, bool], dict[str, _YamlEntr
 
     values: dict[str, bool] = {}
     anchors: dict[str, _YamlEntry] = {}
+    unavailable: dict[str, str] = {}
     for name, matches in sorted(candidates.items()):
-        if len(matches) != 1:
-            raise ToggleSchemaError(
-                f"integration {name} must have exactly one enabled setting; refresh after fixing the file."
-            )
-        value = _parse_scalar(matches[0].scalar)
-        if not isinstance(value, bool):
-            raise ToggleSchemaError(f"integration {name} enabled must be true or false; refresh after fixing the file.")
         setting_id = f"integration:{name}.enabled"
+        try:
+            if len(matches) != 1:
+                raise ToggleSchemaError(
+                    f"integration {name} must have exactly one enabled setting; refresh after fixing the file."
+                )
+            value = _parse_scalar(matches[0].scalar)
+            if not isinstance(value, bool):
+                raise ToggleSchemaError(
+                    f"integration {name} enabled must be true or false; refresh after fixing the file."
+                )
+        except ToggleSchemaError as error:
+            unavailable[setting_id] = str(error)
+            continue
         values[setting_id] = value
         anchors[setting_id] = matches[0]
-    return values, anchors
+    return values, anchors, unavailable
 
 
-def _health_value(text: str) -> tuple[str, re.Match[str]]:
+def _health_state(
+    text: str,
+) -> tuple[str | None, re.Match[str] | None, str | None]:
     matches = list(HEALTH_LINE.finditer(text))
+    if not matches:
+        return None, None, None
     if len(matches) != 1:
-        raise ToggleSchemaError(
+        return None, None, (
             "health_telemetry must appear exactly once before Dex can change it; refresh after fixing the file."
         )
     value = matches[0].group("value").strip()
     if value not in HEALTH_TELEMETRY_STORED_VALUES:
-        raise ToggleSchemaError(
+        return None, None, (
             "health_telemetry has a value outside the supported schema; refresh after fixing the file."
         )
-    return value, matches[0]
+    return value, matches[0], None
+
+
+def _health_value(text: str) -> tuple[str, re.Match[str]]:
+    value, match, unavailable = _health_state(text)
+    if unavailable is not None:
+        raise ToggleSchemaError(unavailable)
+    if value is None or match is None:
+        raise ToggleValidationError("That setting is not present in this Dex's files yet.")
+    return value, match
 
 
 def _replace_yaml_entry(text: str, entry: _YamlEntry, value: Any) -> str:
@@ -437,31 +458,38 @@ class ToggleEngine:
     def read_state(self) -> StateSnapshot:
         values: dict[str, Any] = {}
         stamps: dict[str, FileStamp] = {}
+        unavailable: dict[str, str] = {}
 
         profile_path = _at(self.vault, USER_PROFILE_FILE)
         if profile_path.is_file():
             profile_text, profile_stamp = _read_stamped(profile_path)
-            profile_values, _anchors = _profile_values(profile_text)
+            profile_values, _anchors, profile_unavailable = _profile_values(profile_text)
             values.update(profile_values)
             stamps.update({setting_id: profile_stamp for setting_id in profile_values})
+            unavailable.update(profile_unavailable)
 
         usage_path = _usage_log_file(self.vault)
         if usage_path.is_file():
             usage_text, usage_stamp = _read_stamped(usage_path)
-            health_value, _match = _health_value(usage_text)
-            values["health_telemetry"] = health_value
-            stamps["health_telemetry"] = usage_stamp
+            health_value, _match, health_unavailable = _health_state(usage_text)
+            if health_unavailable is not None:
+                unavailable["health_telemetry"] = health_unavailable
+            elif health_value is not None:
+                values["health_telemetry"] = health_value
+                stamps["health_telemetry"] = usage_stamp
 
         integrations_path = _at(self.vault, INTEGRATION_CONFIG_FILE)
         if integrations_path.is_file():
             integrations_text, integrations_stamp = _read_stamped(integrations_path)
-            integration_values, _anchors = _integration_values(integrations_text)
+            integration_values, _anchors, integration_unavailable = _integration_values(integrations_text)
             values.update(integration_values)
             stamps.update({setting_id: integrations_stamp for setting_id in integration_values})
+            unavailable.update(integration_unavailable)
 
         return StateSnapshot(
             values=dict(sorted(values.items())),
             stamps={setting_id: stamps[setting_id] for setting_id in sorted(stamps)},
+            unavailable=dict(sorted(unavailable.items())),
         )
 
     def write(
@@ -477,13 +505,12 @@ class ToggleEngine:
             raise ToggleValidationError("That setting is not available from the dashboard.")
 
         if spec is not None:
-            _validate_requested_value(setting_id, value, spec)
             path = self._path_for_kind(spec.file_kind)
         else:
-            if not isinstance(value, bool):
-                raise ToggleValidationError(f"{setting_id} accepts only: false, true.")
             path = _at(self.vault, INTEGRATION_CONFIG_FILE)
 
+        if not path.is_file() and spec is not None:
+            raise ToggleValidationError("That setting is not present in this Dex's files yet.")
         if not path.is_file():
             raise ToggleValidationError("That setting is not available from the dashboard.")
 
@@ -530,15 +557,23 @@ class ToggleEngine:
         integration_match: re.Match[str] | None,
     ) -> tuple[Any, str]:
         if spec is not None and spec.file_kind == "profile":
-            values, anchors = _profile_values(current_text)
+            values, anchors, unavailable = _profile_values(current_text)
+            if setting_id in unavailable:
+                raise ToggleSchemaError(unavailable[setting_id])
+            if setting_id not in anchors:
+                raise ToggleValidationError("That setting is not present in this Dex's files yet.")
+            _validate_requested_value(setting_id, value, spec)
             changed = _replace_yaml_entry(current_text, anchors[setting_id], value)
-            _profile_values(changed)
+            _changed_values, changed_anchors, changed_unavailable = _profile_values(changed)
+            if setting_id in changed_unavailable or setting_id not in changed_anchors:
+                raise ToggleSchemaError("The profile shape changed unexpectedly. Refresh and try again.")
             if not _same_yaml_keys(current_text, changed):
                 raise ToggleSchemaError("The profile shape changed unexpectedly. Refresh and try again.")
             return values[setting_id], changed
 
         if spec is not None and spec.file_kind == "usage":
             old, match = _health_value(current_text)
+            _validate_requested_value(setting_id, value, spec)
             changed = (
                 current_text[: match.start()]
                 + match.group("prefix")
@@ -551,11 +586,17 @@ class ToggleEngine:
             return old, changed
 
         assert integration_match is not None
-        values, anchors = _integration_values(current_text)
+        values, anchors, unavailable = _integration_values(current_text)
+        if setting_id in unavailable:
+            raise ToggleSchemaError(unavailable[setting_id])
         if setting_id not in anchors:
             raise ToggleValidationError("That integration is not already present in the config.")
+        if not isinstance(value, bool):
+            raise ToggleValidationError(f"{setting_id} accepts only: false, true.")
         changed = _replace_yaml_entry(current_text, anchors[setting_id], value)
-        _integration_values(changed)
+        _changed_values, changed_anchors, changed_unavailable = _integration_values(changed)
+        if setting_id in changed_unavailable or setting_id not in changed_anchors:
+            raise ToggleSchemaError("The integration config shape changed unexpectedly. Refresh and try again.")
         if not _same_yaml_keys(current_text, changed):
             raise ToggleSchemaError("The integration config shape changed unexpectedly. Refresh and try again.")
         return values[setting_id], changed

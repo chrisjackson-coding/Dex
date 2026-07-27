@@ -218,6 +218,7 @@ def render(
         cache: 'no-store'
       }});
       const payload = await readJson(response);
+      const unavailable = payload.unavailable || {{}};
       controls.forEach((control) => {{
         const settingId = control.dataset.settingId;
         if (Object.prototype.hasOwnProperty.call(payload.settings, settingId)) {{
@@ -225,9 +226,12 @@ def render(
           applyValue(control, payload.settings[settingId]);
           control.disabled = false;
           statusFor(control).textContent = '';
+        }} else if (Object.prototype.hasOwnProperty.call(unavailable, settingId)) {{
+          control.disabled = true;
+          statusFor(control).textContent = unavailable[settingId];
         }} else {{
           control.disabled = true;
-          statusFor(control).textContent = 'Unavailable';
+          statusFor(control).textContent = 'Not set up in this vault yet.';
         }}
       }});
     }} catch (error) {{
