@@ -1,0 +1,354 @@
+"""Socket-free HTTP and settings-section coverage for the Dex Dashboard."""
+
+from __future__ import annotations
+
+import importlib
+import io
+import json
+import os
+import time
+import warnings
+from pathlib import Path
+
+import pytest
+
+warnings.filterwarnings("ignore", category=pytest.PytestUnknownMarkWarning)
+
+
+def _server():
+    return importlib.import_module("core.dashboard.server")
+
+
+def _settings():
+    return importlib.import_module("core.dashboard.sections.settings")
+
+
+def _write(path: Path, content: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _vault(tmp_path: Path) -> tuple[Path, Path]:
+    vault = tmp_path / "vault"
+    _write(
+        vault / "System" / "user-profile.yaml",
+        """\
+name: "Alex"
+communication:
+  formality: "professional_casual"
+  directness: "balanced"
+entity_creation:
+  mode: suggest
+analytics:
+  enabled: true
+""",
+    )
+    _write(
+        vault / "System" / "integrations" / "config.yaml",
+        """\
+enabled:
+  slack: false
+hooks:
+  meeting_prep:
+    use_slack: false
+detected:
+  slack: null
+todoist:
+  enabled: true
+  api_key_env_var: NEVER_RETURN_THIS_SECRET
+""",
+    )
+    _write(
+        vault / "System" / "usage_log.md",
+        "**Health telemetry:** pending\n",
+    )
+    page = _write(
+        tmp_path / "dashboard.html",
+        """<!doctype html>
+<meta name="dashboard-port" content="__DEX_DASHBOARD_PORT__">
+<script>const token = "__DEX_DASHBOARD_TOKEN__";</script>
+""",
+    )
+    return vault, page
+
+
+def _json(response) -> dict:
+    return json.loads(response.body.decode("utf-8"))
+
+
+def _app(tmp_path: Path):
+    server = _server()
+    vault, page = _vault(tmp_path)
+    return (
+        server.DashboardApplication(
+            vault=vault,
+            html_path=page,
+            token="correct-token",
+            port=43123,
+        ),
+        vault,
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "body"),
+    [
+        ("GET", "/", b""),
+        ("GET", "/?t=wrong", b""),
+        ("GET", "/api/state", b""),
+        ("POST", "/api/toggle?t=wrong", b"{}"),
+        ("POST", "/api/close", b""),
+    ],
+)
+def test_every_endpoint_requires_the_run_token(
+    tmp_path: Path,
+    method: str,
+    target: str,
+    body: bytes,
+) -> None:
+    app, _vault_path = _app(tmp_path)
+
+    response = app.handle(method, target, body)
+
+    assert response.status == 403
+    assert _json(response) == {"error": "Forbidden"}
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_token_authentication_uses_constant_time_comparison(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _server()
+    app, _vault_path = _app(tmp_path)
+    compared: list[tuple[str, str]] = []
+    real_compare = server.hmac.compare_digest
+
+    def recording_compare(left: str, right: str) -> bool:
+        compared.append((left, right))
+        return real_compare(left, right)
+
+    monkeypatch.setattr(server.hmac, "compare_digest", recording_compare)
+
+    response = app.handle("GET", "/api/state?t=correct-token")
+
+    assert response.status == 200
+    assert compared == [("correct-token", "correct-token")]
+
+
+def test_http_adapter_checks_token_before_content_length(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _server()
+    app, _vault_path = _app(tmp_path)
+    handler = object.__new__(server.DashboardHTTPRequestHandler)
+    handler.application = app
+    handler.path = "/api/toggle"
+    handler.headers = {"Content-Length": str(server.MAX_REQUEST_BYTES + 1)}
+    handler.rfile = io.BytesIO()
+    captured = []
+    monkeypatch.setattr(handler, "_write_response", captured.append)
+
+    handler.do_POST()
+
+    assert len(captured) == 1
+    assert captured[0].status == 403
+
+
+def test_get_root_serves_in_memory_rewritten_html(tmp_path: Path) -> None:
+    app, _vault_path = _app(tmp_path)
+
+    response = app.handle("GET", "/?t=correct-token")
+
+    text = response.body.decode("utf-8")
+    assert response.status == 200
+    assert response.headers["Content-Type"] == "text/html; charset=utf-8"
+    assert "__DEX_DASHBOARD_TOKEN__" not in text
+    assert "__DEX_DASHBOARD_PORT__" not in text
+    assert '"correct-token"' in text
+    assert 'content="43123"' in text
+
+
+def test_state_is_re_read_and_toggle_write_returns_undo_values(tmp_path: Path) -> None:
+    app, vault = _app(tmp_path)
+
+    state_response = app.handle("GET", "/api/state?t=correct-token")
+    toggle_response = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        json.dumps({"setting_id": "formality", "value": "casual"}).encode(),
+    )
+
+    assert state_response.status == 200
+    assert _json(state_response)["settings"]["formality"] == "professional_casual"
+    assert toggle_response.status == 200
+    assert _json(toggle_response) == {
+        "ok": True,
+        "setting_id": "formality",
+        "old": "professional_casual",
+        "new": "casual",
+    }
+    assert 'formality: "casual"' in (vault / "System" / "user-profile.yaml").read_text(encoding="utf-8")
+    refreshed = app.handle("GET", "/api/state?t=correct-token")
+    assert _json(refreshed)["settings"]["formality"] == "casual"
+
+
+def test_successful_post_advances_only_the_cached_get_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _vault_path = _app(tmp_path)
+    assert app.handle("GET", "/api/state?t=correct-token").status == 200
+
+    def unexpected_read():
+        raise AssertionError("POST must not accept a fresh disk state as the user's GET state")
+
+    monkeypatch.setattr(app.session.engine, "read_state", unexpected_read)
+
+    response = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        b'{"setting_id":"formality","value":"casual"}',
+    )
+
+    assert response.status == 200
+    assert app.session.snapshot is not None
+    assert app.session.snapshot.values["formality"] == "casual"
+
+
+def test_toggle_requires_state_read_and_rejects_concurrent_changes(tmp_path: Path) -> None:
+    app, vault = _app(tmp_path)
+
+    before_state = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        b'{"setting_id":"formality","value":"formal"}',
+    )
+    assert before_state.status == 409
+    assert "refresh" in _json(before_state)["error"].lower()
+
+    assert app.handle("GET", "/api/state?t=correct-token").status == 200
+    profile = vault / "System" / "user-profile.yaml"
+    profile.write_text(
+        profile.read_text(encoding="utf-8").replace('name: "Alex"', 'name: "Sam"'),
+        encoding="utf-8",
+    )
+    conflict = app.handle(
+        "POST",
+        "/api/toggle?t=correct-token",
+        b'{"setting_id":"formality","value":"formal"}',
+    )
+
+    assert conflict.status == 409
+    assert "refresh" in _json(conflict)["error"].lower()
+    assert 'formality: "professional_casual"' in profile.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("payload", "status"),
+    [
+        (b"{bad json", 400),
+        (b"[]", 400),
+        (b'{"setting_id":"unknown","value":true}', 400),
+        (b'{"setting_id":"formality","value":"junk"}', 400),
+        (b'{"setting_id":"analytics_enabled","value":1}', 400),
+        (b'{"setting_id":"formality"}', 400),
+    ],
+)
+def test_bad_toggle_requests_are_safe_client_errors(
+    tmp_path: Path,
+    payload: bytes,
+    status: int,
+) -> None:
+    app, _vault_path = _app(tmp_path)
+    app.handle("GET", "/api/state?t=correct-token")
+
+    response = app.handle("POST", "/api/toggle?t=correct-token", payload)
+
+    assert response.status == status
+    assert set(_json(response)) == {"error"}
+    assert b"NEVER_RETURN_THIS_SECRET" not in response.body
+
+
+def test_close_endpoint_requests_shutdown_without_a_socket(tmp_path: Path) -> None:
+    app, _vault_path = _app(tmp_path)
+
+    response = app.handle("POST", "/api/close?t=correct-token", b"")
+
+    assert response.status == 200
+    assert _json(response) == {"ok": True}
+    assert app.close_requested.is_set()
+
+
+def test_unknown_routes_do_not_serve_files(tmp_path: Path) -> None:
+    app, _vault_path = _app(tmp_path)
+
+    response = app.handle("GET", "/../../System/user-profile.yaml?t=correct-token")
+
+    assert response.status == 404
+    assert _json(response) == {"error": "Not found"}
+
+
+def test_settings_section_escapes_data_and_returns_interactive_javascript() -> None:
+    settings = _settings()
+    data = {
+        "integrations": {
+            "apps": {
+                "Slack & Co": {"enabled": True},
+                '<script>alert("x")</script>': {"enabled": False},
+            }
+        },
+        "profile": {"api_key": "NEVER_RENDER"},
+    }
+
+    fragment, script = settings.render(
+        data,
+        {
+            "token": '"</script><script>alert(1)</script>',
+            "port": 43123,
+        },
+    )
+
+    assert 'id="settings"' in fragment
+    assert 'data-setting-id="analytics_enabled"' in fragment
+    assert 'data-setting-id="entity_creation"' in fragment
+    assert 'data-setting-id="formality"' in fragment
+    assert 'data-setting-id="directness"' in fragment
+    assert 'data-setting-id="health_telemetry"' in fragment
+    assert "Slack &amp; Co" in fragment
+    assert '<script>alert("x")</script>' not in fragment
+    assert "NEVER_RENDER" not in fragment
+    assert "Set up Todoist" in fragment
+    assert "/todoist-setup" in fragment
+    assert "fetch(" in script
+    assert "/api/state" in script
+    assert "/api/toggle" in script
+    assert "/api/close" in script
+    assert "pagehide" in script
+    assert "beforeunload" in script
+    assert "undo" in script.lower()
+    assert "\\u003c/script\\u003e" in script
+    assert "</script>" not in script
+
+
+@pytest.mark.socket_smoke
+@pytest.mark.skipif(
+    os.environ.get("DEX_SOCKET_SMOKE") != "1",
+    reason="requires normal local socket permissions; set DEX_SOCKET_SMOKE=1",
+)
+def test_real_server_exits_after_idle_timeout(tmp_path: Path) -> None:
+    server = _server()
+    vault, page = _vault(tmp_path)
+    started = time.monotonic()
+
+    result = server.run_server(
+        vault=vault,
+        html_path=page,
+        idle_timeout=0.05,
+        open_browser=False,
+    )
+
+    assert result["reason"] == "idle"
+    assert time.monotonic() - started < 2
