@@ -518,7 +518,7 @@ def render(
     }} catch (error) {{
       controls().forEach((control) => {{
         control.disabled = true;
-        statusFor(control).textContent = error.message;
+        statusFor(control).textContent = 'Not live right now — reopen from Dex to change this.';
       }});
     }}
   }}

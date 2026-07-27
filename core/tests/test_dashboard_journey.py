@@ -298,7 +298,7 @@ def test_render_journey_uses_nightfall_states_and_escapes_skill_data() -> None:
     )
 
     assert 'id="journey"' in page
-    assert "You use 1 of 3 capabilities" in page
+    assert "1 capability in your rotation" in page
     assert 'class="journey-chip lit"' in page
     assert 'class="journey-chip dim"' in page
     assert 'class="journey-chip outlined"' in page

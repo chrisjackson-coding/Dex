@@ -49,6 +49,8 @@ def _chip(skill: dict[str, Any], *, hidden: bool = False) -> str:
 
 def _territory(group: dict[str, Any], index: int) -> str:
     raw_name = "Yours" if group.get("yours") is True else group.get("name") or "Other"
+    if raw_name == raw_name.lower():
+        raw_name = raw_name.replace("_", " ").title()
     name = html.escape(str(raw_name), quote=True)
     skills = [skill for skill in _list(group.get("skills")) if isinstance(skill, dict)]
     ordered = [
@@ -121,6 +123,7 @@ def render_journey(journey: dict, picks: list[dict[str, Any]] | None = None) -> 
     counts = _mapping(source.get("counts"))
     available = _number(counts.get("available"))
     used = min(_number(counts.get("used")), available)
+    capabilities_word = "capability" if used == 1 else "capabilities"
     groups = [group for group in _list(source.get("groups")) if isinstance(group, dict)]
     body = "".join(_territory(group, index) for index, group in enumerate(groups))
     skill_picks = _skill_picks(picks)
@@ -131,7 +134,7 @@ def render_journey(journey: dict, picks: list[dict[str, Any]] | None = None) -> 
       <div class="section-heading">
         <p class="kicker">Your journey</p>
         <h2 id="journey-heading">Your Dex, growing with you</h2>
-        <p class="quiet">You use {used} of {available} capabilities.</p>
+        <p class="quiet">{used} {capabilities_word} in your rotation · {available} available to explore.</p>
       </div>
       {skill_picks}
       <div class="state-grid journey-grid">{body}</div>
