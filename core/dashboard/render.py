@@ -16,6 +16,12 @@ from urllib.parse import urlparse
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from core.dashboard import history as dashboard_history
+from core.dashboard import journey as dashboard_journey
+from core.dashboard.sections.history import render_history
+from core.dashboard.sections.journey import render_journey
+from core.dashboard.sections.settings import render as render_settings
+from core.dashboard.server import PORT_PLACEHOLDER, TOKEN_PLACEHOLDER
 from core.paths import DEX_RUNTIME_DIR, VAULT_ROOT
 
 INLINE_MARKDOWN = re.compile(
@@ -343,6 +349,9 @@ def render_dashboard_html(
     *,
     archive_count: int = 0,
     archived: bool = False,
+    journey: dict[str, Any] | None = None,
+    history_data: dict[str, Any] | None = None,
+    server_ctx: dict[str, Any] | None = None,
 ) -> str:
     """Render escaped data into one self-contained Nightfall HTML document."""
     observations = observations or {}
@@ -351,12 +360,23 @@ def render_dashboard_html(
     identity = f"<p class=\"user-name\">{_escape(name)}</p>" if name else ""
     archive_note = f"snapshot #{archive_count} saved" if archived else "snapshot not saved"
     suggestion = _render_suggestion(observations)
+    journey_section = render_journey(journey) if journey is not None else ""
+    history_section = render_history(history_data) if history_data is not None else ""
+    server_meta = ""
+    settings_section = ""
+    settings_script = ""
+    if server_ctx:
+        settings_section, settings_script = render_settings(data, server_ctx)
+        server_meta = (
+            '\n  <meta name="dashboard-port" '
+            f'content="{_escape(server_ctx.get("port", ""))}">'
+        )
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark">{server_meta}
   <title>Your Dex</title>
   <style>
     :root {{
@@ -462,10 +482,167 @@ def render_dashboard_html(
     .health-panel {{ display: grid; grid-template-columns: minmax(12rem, .8fr) minmax(16rem, 1.2fr); gap: 1.5rem; margin-top: 1rem; background: var(--surface-raised); }}
     .health-note {{ margin: 0; font-size: .82rem; }}
     .health-guidance {{ margin: 0; }}
+    .journey-grid {{ align-items: start; }}
+    .territory {{ min-width: 0; }}
+    .journey-chips {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: .55rem;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }}
+    .journey-chip {{
+      padding: .34rem .58rem;
+      border: 1px solid var(--border);
+      border-radius: .55rem;
+      font-size: .78rem;
+      line-height: 1.35;
+    }}
+    .journey-chip.lit {{
+      border-color: rgba(98, 215, 209, .42);
+      background: var(--accent-soft);
+      color: var(--text);
+    }}
+    .journey-chip.dim {{
+      border-color: rgba(255, 255, 255, .06);
+      color: var(--faint);
+    }}
+    .journey-chip.outlined {{
+      border-style: dashed;
+      border-color: rgba(145, 160, 165, .28);
+      color: var(--faint);
+    }}
+    .history-trends {{ gap: 1rem; margin-bottom: 1rem; }}
+    .history-chart svg {{ display: block; width: 100%; height: auto; }}
+    .history-milestone {{ margin: 1rem 0; padding: 1rem 1.25rem; }}
+    .history-milestone h3 {{ margin: 0; color: var(--text); }}
+    .history-looking-back {{ margin-top: 1rem; }}
+    .history-looking-back p {{ margin: 0; }}
+    .settings-list {{
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: .8rem;
+      background: var(--surface);
+    }}
+    .setting-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 1.25rem;
+      padding: 1rem 1.15rem;
+      border-bottom: 1px solid var(--border);
+    }}
+    .setting-row:last-child {{ border-bottom: 0; }}
+    .setting-row-readonly {{ grid-template-columns: 1fr; }}
+    .setting-copy {{ min-width: 0; }}
+    .setting-copy label, .setting-label {{
+      display: block;
+      color: var(--text);
+      font-size: .94rem;
+      font-weight: 650;
+    }}
+    .setting-copy p {{ margin: .18rem 0 0; color: var(--muted); font-size: .78rem; }}
+    .setting-action {{
+      display: flex;
+      min-width: 8.5rem;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: .25rem;
+    }}
+    .setting-action input[role="switch"] {{
+      appearance: none;
+      position: relative;
+      width: 2.6rem;
+      height: 1.45rem;
+      margin: 0;
+      border: 1px solid rgba(145, 160, 165, .3);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .06);
+      cursor: pointer;
+      transition: background .16s ease, border-color .16s ease;
+    }}
+    .setting-action input[role="switch"]::after {{
+      content: "";
+      position: absolute;
+      top: .18rem;
+      left: .2rem;
+      width: .96rem;
+      height: .96rem;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: transform .16s ease, background .16s ease;
+    }}
+    .setting-action input[role="switch"]:checked {{
+      border-color: rgba(98, 215, 209, .62);
+      background: rgba(98, 215, 209, .32);
+    }}
+    .setting-action input[role="switch"]:checked::after {{
+      background: var(--accent);
+      transform: translateX(1.16rem);
+    }}
+    .setting-action input[role="switch"]:focus-visible,
+    .setting-action select:focus-visible {{
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }}
+    .setting-action input:disabled, .setting-action select:disabled {{
+      cursor: not-allowed;
+      opacity: .48;
+    }}
+    .setting-action select {{
+      min-width: 10.5rem;
+      max-width: 15rem;
+      border: 1px solid rgba(145, 160, 165, .26);
+      border-radius: .55rem;
+      background: var(--surface-raised);
+      color: var(--text);
+      padding: .48rem 1.8rem .48rem .62rem;
+      font: inherit;
+      font-size: .82rem;
+    }}
+    .setting-status {{
+      min-height: 1.1rem;
+      color: var(--muted);
+      font-size: .7rem;
+      text-align: right;
+    }}
+    .settings-subsection {{ margin-top: 2rem; }}
+    .settings-subsection h3 {{ margin-bottom: .8rem; }}
+    .handoff-button {{
+      position: static;
+      display: flex;
+      width: 100%;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      border-color: var(--border);
+      background: var(--surface);
+      padding: .85rem 1rem;
+      text-align: left;
+    }}
+    .handoff-button:hover {{ border-color: rgba(98, 215, 209, .28); }}
+    .handoff-button span {{ color: var(--muted); font-size: .75rem; font-weight: 400; }}
+    .handoff-status {{ display: block; min-height: 1.2rem; margin-top: .45rem; color: var(--muted); font-size: .75rem; }}
+    .undo-button {{
+      position: static;
+      margin: 0 0 0 .15rem;
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      padding: 0;
+      font-size: inherit;
+      text-decoration: underline;
+      text-underline-offset: .15em;
+    }}
     footer {{ display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1rem; padding-top: 2rem; border-top: 1px solid var(--border); color: var(--faint); font-size: .78rem; }}
     @media (max-width: 600px) {{
       main {{ padding-inline: 1rem; }}
       .health-panel {{ grid-template-columns: 1fr; }}
+      .setting-row {{ grid-template-columns: 1fr; }}
+      .setting-action {{ min-width: 0; align-items: flex-start; }}
+      .setting-status {{ text-align: left; }}
+      .handoff-button {{ align-items: flex-start; flex-direction: column; }}
       pre {{ padding: 2.8rem 0 0; }}
     }}
   </style>
@@ -481,7 +658,10 @@ def render_dashboard_html(
     {_render_receipt(data)}
     {_render_observations(observations)}
     {suggestion}
+    {journey_section}
     {_render_state(data)}
+    {history_section}
+    {settings_section}
     <footer>
       <span>Generated locally by Dex · nothing leaves your machine</span>
       <span>{_escape(archive_note)}</span>
@@ -515,6 +695,7 @@ def render_dashboard_html(
         }}
       }});
     }})();
+    {settings_script}
   </script>
 </body>
 </html>
@@ -567,6 +748,43 @@ def _snapshot(data: dict[str, Any], observations: dict[str, Any], now: datetime)
     }
 
 
+def _history_section_data(
+    vault: Path,
+    data: dict[str, Any],
+    observations: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        entries = dashboard_history.load_history(vault)
+        if not entries:
+            return None
+        previous_counts = _mapping(entries[-2].get("counts")) if len(entries) > 1 else {}
+        new_counts = _mapping(entries[-1].get("counts"))
+        raw_vault_age = _mapping(_mapping(data.get("meta")).get("vault_age")).get("age_days")
+        vault_age = (
+            raw_vault_age
+            if isinstance(raw_vault_age, int)
+            and not isinstance(raw_vault_age, bool)
+            and raw_vault_age >= 0
+            else None
+        )
+        trend_input = {
+            "analytics": _mapping(data.get("analytics")),
+            "history": entries,
+        }
+        return {
+            "history": entries,
+            "trends": dashboard_history.weekly_trends(trend_input),
+            "milestones": dashboard_history.detect_milestones(
+                previous_counts,
+                new_counts,
+                vault_age,
+            ),
+            "looking_back": observations.get("looking_back"),
+        }
+    except Exception:
+        return None
+
+
 def render_dashboard(
     vault: Path | str,
     data: dict[str, Any],
@@ -575,6 +793,7 @@ def render_dashboard(
     *,
     archive: bool = True,
     now: datetime | None = None,
+    server_ctx: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write the page and, unless disabled, one compact local history line."""
     vault_path = Path(vault).expanduser().resolve()
@@ -596,11 +815,19 @@ def render_dashboard(
                 )
                 + "\n"
             )
+    try:
+        journey_data = dashboard_journey.build_journey(vault_path, data)
+    except Exception:
+        journey_data = None
+    history_data = _history_section_data(vault_path, data, observation_data)
     page = render_dashboard_html(
         data,
         observation_data,
         archive_count=archive_count,
         archived=archive,
+        journey=journey_data,
+        history_data=history_data,
+        server_ctx=server_ctx,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(page, encoding="utf-8")
@@ -625,6 +852,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--observations", type=Path, help="Authored observations JSON")
     parser.add_argument("--out", type=Path, required=True, help="HTML output path")
     parser.add_argument("--no-archive", action="store_true", help="Do not append a history snapshot")
+    parser.add_argument(
+        "--with-settings",
+        action="store_true",
+        help="Include server-ready local settings controls",
+    )
     return parser.parse_args(argv)
 
 
@@ -646,6 +878,11 @@ def main(argv: list[str] | None = None) -> int:
             observations,
             args.out,
             archive=not args.no_archive,
+            server_ctx=(
+                {"token": TOKEN_PLACEHOLDER, "port": PORT_PLACEHOLDER}
+                if args.with_settings
+                else None
+            ),
         )
     except OSError as error:
         print(f"Error: could not write dashboard output: {str(error).splitlines()[0]}", file=sys.stderr)
