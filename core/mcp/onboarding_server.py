@@ -1553,51 +1553,6 @@ def forget_nudge_events() -> Dict[str, Any]:
     }
 
 
-def generate_nudge_calendar() -> Dict[str, Any]:
-    """Write the optional onboarding nudge calendar and return concrete metadata."""
-
-    def _granola_connected() -> bool:
-        # Granola only changes the wording of one event. If its module cannot be
-        # imported or the lookup fails, fall back to the not-connected variant
-        # rather than failing the whole calendar for an optional flourish.
-        try:
-            from core.mcp.granola_server import get_api_key
-
-            return get_api_key() is not None
-        except Exception as error:
-            logger.warning(f"Could not check the Granola connection: {error}")
-            return False
-
-    profile = _load_first_week_profile()
-    pillars = [
-        pillar.get('name', '') if isinstance(pillar, dict) else str(pillar)
-        for pillar in profile.get('pillars', [])
-    ]
-    pillars = [pillar.strip() for pillar in pillars if pillar.strip()]
-    calendar_text = build_nudge_calendar(
-        date.today(),
-        pillars=pillars,
-        granola_connected=_granola_connected(),
-    )
-
-    calendar_path = (BASE_DIR / "System" / "dex-calendar.ics").resolve()
-    calendar_path.parent.mkdir(parents=True, exist_ok=True)
-    calendar_path.write_text(calendar_text, encoding="utf-8", newline="")
-
-    first_date_value = next(
-        line.partition(":")[2]
-        for line in calendar_text.splitlines()
-        if line.startswith("DTSTART;VALUE=DATE:")
-    )
-    return {
-        "path": str(calendar_path),
-        "event_count": calendar_text.count("BEGIN:VEVENT"),
-        "first_event_date": datetime.strptime(
-            first_date_value,
-            "%Y%m%d",
-        ).date().isoformat(),
-    }
-
 # ============================================================================
 # MCP SERVER SETUP
 # ============================================================================

@@ -217,8 +217,8 @@ When the user says anything like:
 - "stop the daily calendar prompts", "get rid of the Dex calendar entries"
 
 **Your workflow:**
-1. Call `forget_nudge_events()` from onboarding-mcp. It returns every event Dex created, with its `event_id` and
-   `calendar_id`, and clears Dex's record of them.
+1. Call `forget_nudge_events()` from onboarding-mcp. It returns every event Dex created, each with the identifier
+   of the event and the calendar it lives in, and clears Dex's record of them.
 2. Delete each returned event using the calendar tool available to you.
 3. Confirm plainly how many were removed. If any could not be deleted, say which and why — never report a clean
    sweep you did not achieve.
