@@ -369,7 +369,12 @@ def test_absent_capability_key_reads_its_safe_contract_default(
 
     snapshot = _toggles().ToggleEngine(vault).read_state()
 
-    assert snapshot.values[setting_id] is False
+    # An absent key means "whatever the shipped contract says" — the contract is the
+    # source of truth for room defaults, so read it rather than hardcoding a value.
+    from core import capabilities as capability_rooms
+
+    expected = capability_rooms.enabled(room, profile_path=profile)
+    assert snapshot.values[setting_id] is expected
     assert setting_id in snapshot.stamps
 
 
