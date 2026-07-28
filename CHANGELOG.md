@@ -135,7 +135,7 @@ Yesterday gave customised setups a guided update with a protected snapshot (the 
 
 * **Dex rebuilds what you built.** After an update, Dex proposes how each of your customisations maps onto the new version, rebuilds them in a safe staging area, and checks them — showing you the verdict for each one honestly: verified, needs your eyes, or can't be safely verified.
 * **You approve every step, freshly.** Nothing goes live until you've seen exactly what will be written and said yes to *that exact* preview. An earlier yes never counts for a later step.
-* **It's undoable while its snapshot is retained.** Every activation is snapshotted first (Dex keeps your three most recent) and can be rewound byte-for-byte, as long as the rebuilt files haven't been changed since. Dex tells you plainly when a rewind is and isn't available.
+* **It's undoable while its snapshot is retained.** Every activation is snapshotted first (Dex keeps your three most recent) and can be put back exactly as it was, as long as the rebuilt files haven't been changed since. Dex tells you plainly when a rewind is and isn't available.
 * **Upfront about its limits.** Anything Dex can't verify — a script it can't safely test, a customisation whose contents it isn't allowed to read — is marked for your review, never silently "migrated". And if a step is interrupted mid-flight, Dex now knows exactly how to recover it.
 
 ## [1.75.2] — 🏠 Your notes get their own home, and Dex learns to guide customised setups through it (2026-07-26)
