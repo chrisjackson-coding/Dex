@@ -200,6 +200,7 @@ test('fresh provision fills omitted capability rooms from template defaults', ()
       quarter_goals: { enabled: true },
     });
     assert.equal(fs.existsSync(path.join(vault, '05-Areas', 'Companies')), true);
+    assert.equal(fs.existsSync(path.join(vault, '01-Quarter_Goals', 'Quarter_Goals.md')), true);
   });
 });
 

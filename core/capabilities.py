@@ -367,12 +367,11 @@ def migrate_legacy_room_state(
 ) -> list[str]:
     """One-time bridge for vaults onboarded before capability rooms existed.
 
-    Preserve each room's pre-migration behavior without overriding an explicit
-    capability value or a legacy config value. Companies is pinned off because
-    its fresh-vault default is now on; Career and Quarter Goals keep the earlier
-    bridge's on default when they have no prior opinion. Fresh installs write
-    explicit room answers at onboarding and are never touched here. Returns the
-    rooms seeded (empty when no migration was needed).
+    Every room with no explicit capability or legacy opinion is restored to on,
+    regardless of whether the profile already has a capability map. Explicit
+    values always win, in either direction. Fresh installs write explicit room
+    answers at onboarding and are never touched here. Returns the rooms seeded
+    (empty when no migration was needed).
     """
     root = Path(vault_root).resolve()
     profile_file = Path(profile_path or root / "System/user-profile.yaml")
@@ -384,15 +383,7 @@ def migrate_legacy_room_state(
         return []
     profile = _read_profile(profile_file, strict=True)
     capability_state = profile.get("capabilities")
-    room_defaults = (
-        {"companies": False}
-        if isinstance(capability_state, Mapping)
-        else {
-            "career": True,
-            "companies": False,
-            "quarter_goals": True,
-        }
-    )
+    room_defaults = {"career": True, "companies": True, "quarter_goals": True}
     seeded: list[str] = []
     for room in room_ids(contract_path=contract_path):
         room_state = (
@@ -538,13 +529,14 @@ def render_missing_companies_compatibility_pin(
     *,
     contract_path: Path | str | None = None,
 ) -> str | None:
-    """Render the one-time Companies-off pin without rewriting profile prose.
+    """Render changed-default compatibility pins without rewriting profile prose.
 
-    ``None`` means the profile already has an explicit or legacy opinion.
-    Invalid state fails closed so an update cannot fall through to the new
-    contract default or replace user-owned data. Profiles with no capability
-    map also retain the earlier Career/Quarter bridge defaults in the same
-    transaction; partial maps gain only the Companies pin.
+    ``None`` means every room already has an explicit or legacy opinion. Invalid
+    state fails closed so an update cannot fall through to a new contract
+    default or replace user-owned data. Every room with no explicit capability
+    or legacy opinion is pinned on, regardless of whether the profile already
+    has a capability map. A pinned room's legacy switch is kept aligned with its
+    capability value.
     """
     try:
         profile = yaml.safe_load(original) or {}
@@ -556,47 +548,10 @@ def render_missing_companies_compatibility_pin(
     capability_state = profile.get("capabilities")
     if capability_state is not None and not isinstance(capability_state, Mapping):
         raise CapabilityError("Profile capabilities must contain an object")
-    company_state = (
-        capability_state.get("companies")
-        if isinstance(capability_state, Mapping)
-        else None
-    )
-    if company_state is not None and not isinstance(company_state, Mapping):
-        raise CapabilityError("Profile capabilities.companies must contain an object")
-    if isinstance(company_state, Mapping) and "enabled" in company_state:
-        if not isinstance(company_state["enabled"], bool):
-            raise CapabilityError(
-                "Profile capabilities.companies.enabled must be true or false"
-            )
-        return None
-    company_surfaces = surfaces_for("companies", contract_path=contract_path)
-    company_legacy_config = company_surfaces.get("config")
-    if isinstance(company_legacy_config, str):
-        company_legacy_state = profile.get(company_legacy_config)
-        if (
-            isinstance(company_legacy_state, Mapping)
-            and "enabled" in company_legacy_state
-        ):
-            if not isinstance(company_legacy_state["enabled"], bool):
-                raise CapabilityError(
-                    f"Profile {company_legacy_config}.enabled must be true or false"
-                )
-            return None
 
-    # A vault that never expressed a choice gets these rooms rather than being
-    # held at an older, emptier shape: restoring a data surface nobody declined
-    # is the point. Companies now matches Career and Quarter Goals; it was the
-    # odd one out, pinned off, which no user could have explained. An explicit
-    # choice, on or off, is read above this and always wins.
-    room_defaults = (
-        {"companies": True}
-        if isinstance(capability_state, Mapping)
-        else {
-            "career": True,
-            "companies": True,
-            "quarter_goals": True,
-        }
-    )
+    # Every room with no explicit or legacy opinion is pinned on, whether or not
+    # the profile already has a capability map; the loop preserves every choice.
+    room_defaults = {"career": True, "companies": True, "quarter_goals": True}
     expected = copy.deepcopy(profile)
     rendered = original
     for room, default in room_defaults.items():
@@ -605,6 +560,10 @@ def render_missing_companies_compatibility_pin(
             if isinstance(capability_state, Mapping)
             else None
         )
+        if room_state is not None and not isinstance(room_state, Mapping):
+            raise CapabilityError(
+                f"Profile capabilities.{room} must contain an object"
+            )
         if isinstance(room_state, Mapping) and "enabled" in room_state:
             if not isinstance(room_state["enabled"], bool):
                 raise CapabilityError(
@@ -613,8 +572,13 @@ def render_missing_companies_compatibility_pin(
             continue
         surfaces = surfaces_for(room, contract_path=contract_path)
         legacy_config = surfaces.get("config")
+        legacy_state = None
         if isinstance(legacy_config, str):
             legacy_state = profile.get(legacy_config)
+            if legacy_state is not None and not isinstance(legacy_state, Mapping):
+                raise CapabilityError(
+                    f"Profile {legacy_config} must contain an object"
+                )
             if isinstance(legacy_state, Mapping) and "enabled" in legacy_state:
                 if not isinstance(legacy_state["enabled"], bool):
                     raise CapabilityError(
@@ -630,12 +594,23 @@ def render_missing_companies_compatibility_pin(
             room,
             default,
         )
+        if isinstance(legacy_config, str):
+            expected.setdefault(legacy_config, {})
+            expected[legacy_config]["enabled"] = default
+            rendered = _set_block_enabled(
+                rendered,
+                legacy_config,
+                None,
+                default,
+            )
+    if rendered == original:
+        return None
     try:
         reparsed = yaml.safe_load(rendered) or {}
     except yaml.YAMLError as exc:  # pragma: no cover - guarded by byte-level tests
-        raise CapabilityError("Companies compatibility pin produced invalid YAML") from exc
+        raise CapabilityError("Capability compatibility pin produced invalid YAML") from exc
     if reparsed != expected:
-        raise CapabilityError("Companies compatibility pin changed unrelated profile state")
+        raise CapabilityError("Capability compatibility pin changed unrelated profile state")
     return rendered
 
 

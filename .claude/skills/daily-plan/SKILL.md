@@ -342,7 +342,7 @@ Also gather:
 - **Calendar**: Today's meetings with times and attendees
 - **Tasks**: P0, P1, started-but-not-completed, overdue
 - **Week Priorities**: This week's Top 3
-- **Work Summary**: Quarterly goals context (if enabled)
+- **Work Summary**: Quarterly goals context (if any are set)
 - **People**: Context for meeting attendees
 - **Self-Learning Alerts**: Changelog updates, pending learnings
 - **System health**: Only when the overnight smoke report has `summary.broken > 0`, note that a self-check found a problem and point to `/dex-doctor` for diagnosis

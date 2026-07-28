@@ -7,6 +7,14 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
+## [1.80.0] — 🧹 Follow-through on your goals and career pages coming back (2026-07-28)
+
+The last releases brought Quarter Goals, Career, and Companies back for everyone who'd never chosen to turn them off. This release closes the remaining gaps in that promise.
+
+* **Every update route now agrees.** One of the ways Dex applies an update could still have left Companies switched off for someone who had never made a choice either way. All routes now follow the same rule: a room you never declined comes back on, and any choice you actually made — on or off — always stands.
+* **A fresh install gets the settings it was promised.** New vaults are set up with Quarter Goals, Career and Companies included, and the older setting behind quarterly planning now matches instead of quietly saying otherwise.
+* **The goals page greets you instead of lecturing you.** A brand-new goals page used to open with a technical note about when the file gets created. It now says what the page is for and how to begin: run `/quarter-plan` whenever you're ready to plan the next three months. Until then, daily and weekly planning work exactly as normal — Dex never nags you about goals you haven't set.
+
 ## [1.79.0] — 📋 Your meetings get dealt with without you asking (2026-07-28)
 
 Your meetings did arrive in Dex on their own — but turning them into something useful (updated pages for the people you met, tasks from what you agreed to do, tidy notes) still waited for you to ask. If you never asked, meetings quietly piled up half-done. The docs promised meetings "flow in on their own" — this release makes that promise true.

@@ -19,6 +19,12 @@ PILLARS = {
         "keywords": ["customer"],
     }
 }
+REPO_ROOT = Path(__file__).resolve().parents[2]
+QUARTER_GOALS_STARTER = (
+    REPO_ROOT
+    / ".claude/skills/_available/capabilities/quarter_goals/folders"
+    / "01-Quarter_Goals/Quarter_Goals.md"
+)
 
 
 def _call_create_priority(**overrides) -> dict:
@@ -65,6 +71,7 @@ def test_create_weekly_priority_fills_empty_section_without_losing_following_con
 
     assert result["success"] is True
     assert result["linked_goal"] is None
+    assert result["goal_inference"] is None
     assert priority_file.read_text(encoding="utf-8") == (
         "# Week Priorities\n\n"
         "**Week of:** 2026-07-13\n\n"
@@ -78,6 +85,23 @@ def test_create_weekly_priority_fills_empty_section_without_losing_following_con
         "## 📝 Notes\n\n"
         "This text must survive the splice.\n"
     )
+
+
+def test_get_quarterly_goals_returns_zero_for_the_invitation_starter(
+    priority_file: Path,
+):
+    goals_file = priority_file.parents[1] / "01-Quarter_Goals/Quarter_Goals.md"
+    goals_file.parent.mkdir(parents=True)
+    goals_file.write_text(
+        QUARTER_GOALS_STARTER.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(work_server.handle_call_tool("get_quarterly_goals", {}))
+    payload = json.loads(result[0].text)
+
+    assert payload["count"] == 0
+    assert payload["goals"] == []
 
 
 def test_create_weekly_priority_writes_explicit_goal_link_without_mangling_headings(

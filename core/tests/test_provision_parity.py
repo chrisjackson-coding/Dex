@@ -246,7 +246,7 @@ def test_compatibility_pin_recovers_before_inspecting_profile(
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-def test_lifecycle_only_update_adds_only_companies_to_a_partial_capability_map(
+def test_lifecycle_only_update_pins_missing_rooms_in_a_partial_capability_map(
     tmp_path: Path,
 ) -> None:
     vault = _prepare_provision_vault(
@@ -260,11 +260,13 @@ def test_lifecycle_only_update_adds_only_companies_to_a_partial_capability_map(
         (vault / "System/user-profile.yaml").read_text(encoding="utf-8")
     )
     assert profile["capabilities"] == {
-        # Companies is added because this vault never said otherwise; the
+        # Missing rooms are added because this vault never said otherwise; the
         # explicit career: false above is a real choice and is preserved.
         "companies": {"enabled": True},
+        "quarter_goals": {"enabled": True},
         "career": {"enabled": False},
     }
+    assert profile["quarterly_planning"]["enabled"] is True
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
@@ -318,8 +320,17 @@ def test_lifecycle_only_update_preserves_an_explicit_company_choice(
 
     summary = _run_provision(vault, "--adopt", "--lifecycle-only")
 
-    assert (vault / "System/user-profile.yaml").read_text(encoding="utf-8") == original
-    assert summary["compatibility_pins"] == []
+    rendered = (vault / "System/user-profile.yaml").read_text(encoding="utf-8")
+    assert "# keep this comment" in rendered
+    profile = yaml.safe_load(rendered)
+    assert profile["capabilities"]["companies"] == {
+        "enabled": company_enabled,
+        "custom": "keep",
+    }
+    assert profile["capabilities"]["career"]["enabled"] is True
+    assert profile["capabilities"]["quarter_goals"]["enabled"] is True
+    assert profile["quarterly_planning"]["enabled"] is True
+    assert summary["compatibility_pins"] == ["companies"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")

@@ -224,7 +224,7 @@ Based on their answers:
    ```bash
    "$VAULT_PATH/.venv/bin/python" "$VAULT_PATH/core/capabilities.py" --reconcile --vault "$VAULT_PATH"
    ```
-   - `01-Quarter_Goals/` (optional)
+   - `01-Quarter_Goals/` (included by default; off only if the room was disabled)
    - `03-Tasks/`
    - `02-Week_Priorities/`
 2. **Update CLAUDE.md** with their profile:

@@ -422,16 +422,21 @@ def test_setup_reconciles_rooms_without_creating_companies_directly() -> None:
     assert "- `05-Areas/Companies/`" not in setup
 
 
-def test_legacy_onboarded_vault_pins_companies_off_and_honors_legacy_state(tmp_path):
-    """An existing vault gets a durable Companies-off opinion before the
-    contract default changes, while its legacy quarter choice remains authoritative."""
+@pytest.mark.parametrize("legacy_enabled", [True, False])
+def test_legacy_onboarded_vault_restores_no_opinion_rooms_and_honors_legacy_state(
+    tmp_path: Path,
+    legacy_enabled: bool,
+) -> None:
+    """A pre-rooms vault is restored to on without replacing a legacy opinion."""
     from core import capabilities
 
     vault = _fake_vault(tmp_path)
     (vault / "System").mkdir(parents=True, exist_ok=True)
     (vault / "System" / ".onboarding-complete").write_text("{}\n", encoding="utf-8")
     (vault / "System" / "user-profile.yaml").write_text(
-        "name: Legacy User\nquarterly_planning:\n  enabled: false\n",
+        "name: Legacy User\n"
+        "quarterly_planning:\n"
+        f"  enabled: {'true' if legacy_enabled else 'false'}\n",
         encoding="utf-8",
     )
 
@@ -440,11 +445,14 @@ def test_legacy_onboarded_vault_pins_companies_off_and_honors_legacy_state(tmp_p
     assert sorted(seeded) == ["career", "companies"]
     profile_path = vault / "System" / "user-profile.yaml"
     assert capabilities.enabled("career", profile_path=profile_path) is True
-    assert capabilities.enabled("companies", profile_path=profile_path) is False
-    assert capabilities.enabled("quarter_goals", profile_path=profile_path) is False
+    assert capabilities.enabled("companies", profile_path=profile_path) is True
+    assert (
+        capabilities.enabled("quarter_goals", profile_path=profile_path)
+        is legacy_enabled
+    )
     profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
-    assert profile["capabilities"]["companies"]["enabled"] is False
-    assert profile["quarterly_planning"]["enabled"] is False
+    assert profile["capabilities"]["companies"]["enabled"] is True
+    assert profile["quarterly_planning"]["enabled"] is legacy_enabled
     # Idempotent: a second run seeds nothing.
     assert capabilities.migrate_legacy_room_state(vault) == []
 
@@ -464,8 +472,9 @@ def test_pre_engine_identity_without_marker_gets_legacy_room_pins(
 
     assert sorted(seeded) == ["career", "companies", "quarter_goals"]
     assert capabilities.enabled("career", profile_path=profile_path) is True
-    assert capabilities.enabled("companies", profile_path=profile_path) is False
+    assert capabilities.enabled("companies", profile_path=profile_path) is True
     assert capabilities.enabled("quarter_goals", profile_path=profile_path) is True
+    assert capabilities.migrate_legacy_room_state(vault) == []
 
 
 def test_real_room_content_without_marker_counts_as_onboarding_evidence(
@@ -482,7 +491,7 @@ def test_real_room_content_without_marker_counts_as_onboarding_evidence(
     seeded = capabilities.migrate_legacy_room_state(vault)
 
     assert sorted(seeded) == ["career", "companies", "quarter_goals"]
-    assert capabilities.enabled("companies", profile_path=profile_path) is False
+    assert capabilities.enabled("companies", profile_path=profile_path) is True
 
 
 def test_shipped_room_seed_without_identity_is_not_onboarding_evidence(
@@ -583,40 +592,227 @@ def test_legacy_migration_preserves_explicit_company_state(
         encoding="utf-8",
     )
 
-    capabilities.migrate_legacy_room_state(vault)
+    seeded = capabilities.migrate_legacy_room_state(vault)
 
     profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    assert seeded == ["career", "quarter_goals"]
+    assert profile["capabilities"]["career"]["enabled"] is True
     assert profile["capabilities"]["companies"] == {
         "enabled": company_enabled,
         "custom": "keep",
     }
+    assert profile["capabilities"]["quarter_goals"]["enabled"] is True
+    assert profile["quarterly_planning"]["enabled"] is True
+    assert capabilities.migrate_legacy_room_state(vault) == []
 
 
-def test_partial_capability_map_only_gains_the_companies_compatibility_pin(
+@pytest.mark.parametrize("quarter_enabled", [True, False])
+def test_legacy_migration_preserves_explicit_quarter_goal_state(
     tmp_path: Path,
+    quarter_enabled: bool,
 ) -> None:
     vault = _fake_vault(tmp_path)
     profile_path = vault / "System/user-profile.yaml"
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     (vault / "System/.onboarding-complete").write_text("{}\n", encoding="utf-8")
     profile_path.write_text(
-        "capabilities:\n  career:\n    enabled: false\n",
+        yaml.safe_dump(
+            {
+                "capabilities": {
+                    "quarter_goals": {
+                        "enabled": quarter_enabled,
+                        "custom": "keep",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
 
     seeded = capabilities.migrate_legacy_room_state(vault)
 
     profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
-    assert seeded == ["companies"]
-    assert profile["capabilities"] == {
-        "career": {"enabled": False},
-        "companies": {"enabled": False},
+    assert seeded == ["career", "companies"]
+    assert profile["capabilities"]["career"]["enabled"] is True
+    assert profile["capabilities"]["companies"]["enabled"] is True
+    assert profile["capabilities"]["quarter_goals"] == {
+        "enabled": quarter_enabled,
+        "custom": "keep",
     }
-    assert capabilities.enabled(
-        "quarter_goals",
-        profile_path=profile_path,
-        contract_path=CONTRACT_PATH,
-    ) is True
+    assert capabilities.migrate_legacy_room_state(vault) == []
+
+
+@pytest.mark.parametrize("career_enabled", [True, False])
+def test_partial_capability_map_seeds_companies_on_without_replacing_career(
+    tmp_path: Path,
+    career_enabled: bool,
+) -> None:
+    vault = _fake_vault(tmp_path)
+    profile_path = vault / "System/user-profile.yaml"
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    (vault / "System/.onboarding-complete").write_text("{}\n", encoding="utf-8")
+    profile_path.write_text(
+        "capabilities:\n"
+        "  career:\n"
+        f"    enabled: {'true' if career_enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+
+    seeded = capabilities.migrate_legacy_room_state(vault)
+
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    assert sorted(seeded) == ["companies", "quarter_goals"]
+    assert profile["capabilities"] == {
+        "career": {"enabled": career_enabled},
+        "companies": {"enabled": True},
+        "quarter_goals": {"enabled": True},
+    }
+    assert profile["quarterly_planning"]["enabled"] is True
+    assert capabilities.migrate_legacy_room_state(vault) == []
+
+
+def test_render_no_map_pins_all_rooms_on_and_aligns_legacy_switch() -> None:
+    original = "# keep this comment\nname: Legacy User\n"
+
+    rendered = capabilities.render_missing_companies_compatibility_pin(original)
+
+    assert rendered is not None
+    assert rendered.startswith(original)
+    profile = yaml.safe_load(rendered)
+    assert profile["capabilities"] == {
+        "career": {"enabled": True},
+        "companies": {"enabled": True},
+        "quarter_goals": {"enabled": True},
+    }
+    assert profile["quarterly_planning"]["enabled"] is True
+    assert capabilities.render_missing_companies_compatibility_pin(rendered) is None
+
+
+@pytest.mark.parametrize("career_enabled", [True, False])
+def test_render_partial_map_pins_missing_rooms_without_replacing_career(
+    career_enabled: bool,
+) -> None:
+    original = (
+        "# keep this comment\n"
+        "capabilities:\n"
+        "  career:\n"
+        f"    enabled: {'true' if career_enabled else 'false'}\n"
+    )
+
+    rendered = capabilities.render_missing_companies_compatibility_pin(original)
+
+    assert rendered is not None
+    assert "# keep this comment" in rendered
+    profile = yaml.safe_load(rendered)
+    assert profile["capabilities"] == {
+        "companies": {"enabled": True},
+        "quarter_goals": {"enabled": True},
+        "career": {"enabled": career_enabled},
+    }
+    assert profile["quarterly_planning"]["enabled"] is True
+    assert capabilities.render_missing_companies_compatibility_pin(rendered) is None
+
+
+@pytest.mark.parametrize("quarter_enabled", [True, False])
+def test_render_pin_preserves_explicit_quarter_goal_state(
+    quarter_enabled: bool,
+) -> None:
+    original = (
+        "capabilities:\n"
+        "  career:\n"
+        "    enabled: false\n"
+        "  quarter_goals:\n"
+        f"    enabled: {'true' if quarter_enabled else 'false'}\n"
+        "    custom: keep\n"
+    )
+
+    rendered = capabilities.render_missing_companies_compatibility_pin(original)
+
+    assert rendered is not None
+    profile = yaml.safe_load(rendered)
+    assert profile["capabilities"]["companies"]["enabled"] is True
+    assert profile["capabilities"]["quarter_goals"] == {
+        "enabled": quarter_enabled,
+        "custom": "keep",
+    }
+    assert "quarterly_planning" not in profile
+    assert capabilities.render_missing_companies_compatibility_pin(rendered) is None
+
+
+@pytest.mark.parametrize("legacy_enabled", [True, False])
+def test_render_pin_preserves_legacy_quarter_goal_state(
+    legacy_enabled: bool,
+) -> None:
+    original = (
+        "capabilities:\n"
+        "  career:\n"
+        "    enabled: false\n"
+        "quarterly_planning:\n"
+        f"  enabled: {'true' if legacy_enabled else 'false'}\n"
+        "  q1_start_month: 4\n"
+    )
+
+    rendered = capabilities.render_missing_companies_compatibility_pin(original)
+
+    assert rendered is not None
+    profile = yaml.safe_load(rendered)
+    assert profile["capabilities"]["companies"]["enabled"] is True
+    assert "quarter_goals" not in profile["capabilities"]
+    assert profile["quarterly_planning"] == {
+        "enabled": legacy_enabled,
+        "q1_start_month": 4,
+    }
+    assert capabilities.render_missing_companies_compatibility_pin(rendered) is None
+
+
+@pytest.mark.parametrize("company_enabled", [True, False])
+def test_render_pin_does_not_stop_at_an_explicit_company_state(
+    company_enabled: bool,
+) -> None:
+    original = (
+        "# keep this comment\n"
+        "capabilities:\n"
+        "  companies:\n"
+        f"    enabled: {'true' if company_enabled else 'false'}\n"
+        "    custom: keep\n"
+    )
+
+    rendered = capabilities.render_missing_companies_compatibility_pin(original)
+
+    assert rendered is not None
+    assert "# keep this comment" in rendered
+    profile = yaml.safe_load(rendered)
+    assert profile["capabilities"]["companies"] == {
+        "enabled": company_enabled,
+        "custom": "keep",
+    }
+    assert profile["capabilities"]["career"]["enabled"] is True
+    assert profile["capabilities"]["quarter_goals"]["enabled"] is True
+    assert profile["quarterly_planning"]["enabled"] is True
+    assert capabilities.render_missing_companies_compatibility_pin(rendered) is None
+
+
+@pytest.mark.parametrize(
+    ("original", "error"),
+    [
+        (
+            "capabilities:\n  companies: false\n",
+            r"capabilities\.companies must contain an object",
+        ),
+        (
+            "capabilities:\n  career:\n    enabled: false\n"
+            "quarterly_planning: false\n",
+            "quarterly_planning must contain an object",
+        ),
+    ],
+)
+def test_render_pin_rejects_malformed_per_room_state(
+    original: str,
+    error: str,
+) -> None:
+    with pytest.raises(capabilities.CapabilityError, match=error):
+        capabilities.render_missing_companies_compatibility_pin(original)
 
 
 def test_fresh_unonboarded_vault_is_never_migrated(tmp_path):

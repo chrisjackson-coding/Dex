@@ -240,9 +240,9 @@ Most users won't edit this directly—Dex manages it. But when you want to adjus
 
 ---
 
-## Planning Hierarchy (Optional)
+## Planning Hierarchy
 
-If you enable quarterly and weekly planning, everything connects from pillars → quarters → weeks → days:
+Quarterly and weekly planning are set up from the start, connecting pillars → quarters → weeks → days whenever you choose to set goals:
 
 1. **Strategic Pillars** (`System/pillars.yaml`)  
    Your ongoing focus areas—NOT time-bound goals, but the broad themes you'll always focus on (configured during onboarding)
