@@ -7,6 +7,15 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
+## [1.80.0] — 👋 Saying hi on a fresh install starts setup (2026-07-28)
+
+A brand-new install is supposed to greet you and walk you through setup the moment you say hello. Instead, new users got a blank "What are you working on?" — Dex decided whether you were new by checking for a folder that every install now includes from the start, so it always concluded setup was already done. (`/setup` always worked as the manual route, if you hit this.)
+
+Two fixes, so this can't happen again:
+
+* **Dex now checks the right signal** — the marker that setup itself leaves behind when it finishes.
+* **And the check is guaranteed, not just written down.** Every session now starts with an automatic look for that marker. If setup never finished, Dex is told in no uncertain terms to start (or resume) it before anything else — so saying hi always gets you a proper welcome, and if you were partway through setup, you pick up where you left off. Once setup is done, this check is silent and instant.
+
 ## [1.79.0] — 📋 Your meetings get dealt with without you asking (2026-07-28)
 
 Your meetings did arrive in Dex on their own — but turning them into something useful (updated pages for the people you met, tasks from what you agreed to do, tidy notes) still waited for you to ask. If you never asked, meetings quietly piled up half-done. The docs promised meetings "flow in on their own" — this release makes that promise true.
