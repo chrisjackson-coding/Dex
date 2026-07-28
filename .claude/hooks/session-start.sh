@@ -54,9 +54,19 @@ if [[ -f "$ONBOARDING_MARKER" ]]; then
     fi
 fi
 
-# Skip background checks during onboarding - nothing to check yet!
+# FIRST-TIME SETUP GUARD: the marker is written only when onboarding finishes,
+# so its absence is the one honest "this vault was never set up" signal. Inject
+# an unambiguous directive so a bare "hi" can never dead-end in a blank prompt,
+# even if the CLAUDE.md First-Time Setup instruction is glossed over. When the
+# marker exists this whole block is a silent, instant no-op on every session.
 if [[ ! -f "$ONBOARDING_MARKER" ]]; then
-    echo "⏩ Onboarding in progress - background checks disabled"
+    echo "🚨 FIRST-TIME SETUP REQUIRED — THIS VAULT HAS NEVER BEEN SET UP"
+    if [[ -f "$CLAUDE_DIR/System/.onboarding-session.json" ]]; then
+        echo "Onboarding was started earlier but never finished. Whatever the user's first message says — even just 'hi' — resume setup NOW: call start_onboarding_session() from onboarding-mcp (it restores their progress) and continue the flow in .claude/flows/onboarding.md."
+    else
+        echo "Whatever the user's first message says — even just 'hi' — begin onboarding NOW: call start_onboarding_session() from onboarding-mcp and follow the flow in .claude/flows/onboarding.md. Do not ask what they are working on; setup comes first."
+    fi
+    echo "(Background checks stay disabled until setup completes.)"
     echo ""
 fi
 
