@@ -450,19 +450,33 @@ def test_onboarding_completion_offers_the_optional_nudge_calendar() -> None:
     flow = _read(".claude/flows/onboarding.md")
     completion = flow.split("## Step 11:", 1)[1].split("## Step 12:", 1)[0]
 
-    assert (
-        "Want me to put a few gentle nudges in your calendar for your first "
-        "few weeks? One a day, each with something to try. They're all-day "
-        "reminders marked private and free, so they never block your time or "
-        "make you look busy — and you can delete the whole thing in one tap."
-        in completion
-    )
     assert "**Yes, add them**" in completion
     assert "**No thanks**" in completion
+
+    # The offer must show a real example before asking, and must use the one the
+    # tool returns rather than inventing copy that could drift from what lands.
+    assert "get_nudge_plan()" in completion
+    assert "example" in completion
+    assert "do not write your own" in completion
+
+    # Skip the offer for anyone who already has them.
+    assert "already_created" in completion
+
+    # All-day, free and private are not negotiable. A calendar tool that cannot
+    # do all three must fall back rather than create busy blocks across the day.
+    assert "all-day" in completion
+    assert "free" in completion
+    assert "private" in completion
+    assert "do NOT\n   create the events" in completion
+
+    # Removal only works if the created ids are recorded.
+    assert "record_nudge_events(" in completion
+    assert "remove the Dex nudges" in completion
+
+    # The file import stays as the honest fallback, described honestly.
     assert "generate_nudge_calendar()" in completion
-    assert "opening it will offer to add a new calendar called Dex" in completion
+    assert "not practical on a phone" in completion
     assert "`open <path>`" in completion
-    assert 'choose "New Calendar" if asked' in completion
     assert "say nothing more about it and move on" in completion
     assert "Do not ask again" in completion
     assert "Do not capture anything" in completion

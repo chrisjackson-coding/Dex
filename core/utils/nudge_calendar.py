@@ -161,7 +161,7 @@ _SIGN_OFF_COPY = _EventCopy(
     (
         'Say this: "Review my week."',
         "That's the end of the getting-started series — no more new prompts from us.",
-        "The weekly wrap-up stays in your calendar from here, because it's the one that compounds. If you'd rather it didn't, delete the calendar called Dex and everything stops. One tap, no hard feelings.",
+        "The weekly wrap-up stays in your calendar from here, because it's the one that compounds. If you'd rather it didn't, ask Dex to remove the nudges and everything stops. One ask, no hard feelings.",
         "Everything from the last few weeks lives at https://heydex.ai/help/prompts-to-steal.html",
     ),
 )
@@ -284,6 +284,32 @@ def _run_id(
     return hashlib.sha256(inputs.encode("utf-8")).hexdigest()[:20]
 
 
+def _event_description(event: _ScheduledEvent) -> str:
+    return "\n\n".join((*event.copy.description_lines, _MARKER))
+
+
+def _recurrence_rule(event: _ScheduledEvent) -> str | None:
+    if not event.recurring:
+        return None
+    return f"FREQ=WEEKLY;BYDAY={_ICAL_WEEKDAYS[event.day.weekday()]}"
+
+
+def _build_scheduled_nudges(
+    start_from: date,
+    pillars: list[str] | None,
+    granola_connected: bool,
+) -> tuple[list[_ScheduledEvent], str]:
+    selected_pillars = list(pillars or [])
+    teaching_copy = _personalised_teaching_copy(
+        selected_pillars,
+        granola_connected,
+    )
+    return (
+        _schedule_events(start_from, teaching_copy),
+        _run_id(start_from, selected_pillars, granola_connected),
+    )
+
+
 def _render_event(
     event: _ScheduledEvent,
     *,
@@ -291,7 +317,6 @@ def _render_event(
     run_id: str,
     dtstamp: str,
 ) -> list[str]:
-    description = "\n\n".join((*event.copy.description_lines, _MARKER))
     lines = [
         "BEGIN:VEVENT",
         f"UID:dex-nudge-{run_id}-{event_index:02d}@heydex.ai",
@@ -299,16 +324,41 @@ def _render_event(
         f"DTSTART;VALUE=DATE:{event.day:%Y%m%d}",
         f"DTEND;VALUE=DATE:{event.day + timedelta(days=1):%Y%m%d}",
         f"SUMMARY:{_escape_text(event.copy.summary)}",
-        f"DESCRIPTION:{_escape_text(description)}",
+        f"DESCRIPTION:{_escape_text(_event_description(event))}",
         "TRANSP:TRANSPARENT",
         "CLASS:PRIVATE",
     ]
-    if event.recurring:
-        lines.append(
-            f"RRULE:FREQ=WEEKLY;BYDAY={_ICAL_WEEKDAYS[event.day.weekday()]}"
-        )
+    recurrence = _recurrence_rule(event)
+    if recurrence is not None:
+        lines.append(f"RRULE:{recurrence}")
     lines.append("END:VEVENT")
     return lines
+
+
+def build_nudge_plan(
+    start_from: date,
+    pillars: list[str] | None = None,
+    granola_connected: bool = False,
+) -> list[dict]:
+    """Return the deterministic first-month nudge schedule as JSON-safe data."""
+    events, run_id = _build_scheduled_nudges(
+        start_from,
+        pillars,
+        granola_connected,
+    )
+    return [
+        {
+            "key": f"dex-nudge-{run_id}-{event_index:02d}",
+            "date": event.day.isoformat(),
+            "summary": event.copy.summary,
+            "description": _event_description(event),
+            "all_day": True,
+            "free": True,
+            "private": True,
+            "recurrence": _recurrence_rule(event),
+        }
+        for event_index, event in enumerate(events, start=1)
+    ]
 
 
 def build_nudge_calendar(
@@ -317,13 +367,11 @@ def build_nudge_calendar(
     granola_connected: bool = False,
 ) -> str:
     """Return a deterministic first-month Dex calendar in iCalendar format."""
-    selected_pillars = list(pillars or [])
-    teaching_copy = _personalised_teaching_copy(
-        selected_pillars,
+    events, run_id = _build_scheduled_nudges(
+        start_from,
+        pillars,
         granola_connected,
     )
-    events = _schedule_events(start_from, teaching_copy)
-    run_id = _run_id(start_from, selected_pillars, granola_connected)
     dtstamp = f"{start_from:%Y%m%d}T000000Z"
 
     lines = [

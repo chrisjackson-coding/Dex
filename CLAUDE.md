@@ -206,6 +206,25 @@ Adapt your tone and language based on user preferences in `System/user-profile.y
 
 Apply consistently across all interactions (planning, reviews, meetings, project discussions).
 
+### Calendar Nudges (Natural Language Triggers)
+
+Dex can add a short run of all-day reminders to the user's calendar during setup — one a day for the first few
+weeks, each carrying a prompt to try. They live in the user's normal calendar, so the only way to remove them is
+for Dex to delete the events it created.
+
+When the user says anything like:
+- "remove the Dex nudges", "delete the Dex reminders", "take those calendar events out"
+- "stop the daily calendar prompts", "get rid of the Dex calendar entries"
+
+**Your workflow:**
+1. Call `forget_nudge_events()` from onboarding-mcp. It returns every event Dex created, with its `event_id` and
+   `calendar_id`, and clears Dex's record of them.
+2. Delete each returned event using the calendar tool available to you.
+3. Confirm plainly how many were removed. If any could not be deleted, say which and why — never report a clean
+   sweep you did not achieve.
+
+If it returns nothing, say so kindly: there are no Dex nudges in their calendar to remove.
+
 ### Granola Mobile Recordings (Natural Language Triggers)
 
 When the user mentions any of these:

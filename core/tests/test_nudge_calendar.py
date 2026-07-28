@@ -218,7 +218,7 @@ def test_sunday_to_thursday_calendar_skips_friday_and_saturday(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from core.utils.nudge_calendar import build_nudge_calendar
+    from core.utils.nudge_calendar import build_nudge_calendar, build_nudge_plan
 
     _configure_working_week(
         tmp_path,
@@ -244,6 +244,18 @@ def test_sunday_to_thursday_calendar_skips_friday_and_saturday(
     assert [event["RRULE"] for event in events if "RRULE" in event] == [
         "FREQ=WEEKLY;BYDAY=TH"
     ]
+
+    plan = build_nudge_plan(date(2026, 7, 25))
+
+    assert all(
+        datetime.fromisoformat(event["date"]).weekday() not in {4, 5}
+        for event in plan
+    )
+    assert [
+        event["recurrence"]
+        for event in plan
+        if event["recurrence"] is not None
+    ] == ["FREQ=WEEKLY;BYDAY=TH"]
 
 
 @pytest.mark.parametrize(
@@ -297,6 +309,54 @@ def test_every_event_is_private_transparent_all_day_and_has_no_alarm(
         assert event["TRANSP"] == "TRANSPARENT"
         assert event["CLASS"] == "PRIVATE"
         assert event["DTSTAMP"] == "20260726T000000Z"
+
+
+def test_nudge_plan_matches_calendar_events_and_has_stable_json_safe_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.utils.nudge_calendar import build_nudge_calendar, build_nudge_plan
+
+    _configure_working_week(
+        tmp_path,
+        monkeypatch,
+        ["monday", "tuesday", "wednesday", "thursday", "friday"],
+    )
+    inputs = {
+        "start_from": date(2026, 7, 26),
+        "pillars": ["Customers", "Product"],
+        "granola_connected": True,
+    }
+
+    calendar_events = _events(build_nudge_calendar(**inputs))
+    plan = build_nudge_plan(**inputs)
+
+    assert json.loads(json.dumps(plan)) == plan
+    assert len(plan) == len(calendar_events)
+    assert [event["date"] for event in plan] == [
+        datetime.strptime(
+            event["DTSTART;VALUE=DATE"],
+            "%Y%m%d",
+        ).date().isoformat()
+        for event in calendar_events
+    ]
+    assert [event["summary"] for event in plan] == [
+        _summary(event) for event in calendar_events
+    ]
+    assert [event["description"] for event in plan] == [
+        _description(event) for event in calendar_events
+    ]
+    assert all(
+        event["all_day"] is True
+        and event["free"] is True
+        and event["private"] is True
+        for event in plan
+    )
+    assert sum(event["recurrence"] is not None for event in plan) == 1
+    assert len({event["key"] for event in plan}) == len(plan)
+    assert [event["key"] for event in plan] == [
+        event["key"] for event in build_nudge_plan(**inputs)
+    ]
 
 
 def test_calendar_metadata_line_folding_and_open_ended_recurrence(
@@ -487,7 +547,7 @@ def test_weekly_and_sign_off_events_use_the_exact_copy(
     sign_off_lines = (
         'Say this: "Review my week."',
         "That's the end of the getting-started series — no more new prompts from us.",
-        "The weekly wrap-up stays in your calendar from here, because it's the one that compounds. If you'd rather it didn't, delete the calendar called Dex and everything stops. One tap, no hard feelings.",
+        "The weekly wrap-up stays in your calendar from here, because it's the one that compounds. If you'd rather it didn't, ask Dex to remove the nudges and everything stops. One ask, no hard feelings.",
         "Everything from the last few weeks lives at https://heydex.ai/help/prompts-to-steal.html",
         MARKER,
     )

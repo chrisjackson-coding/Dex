@@ -726,12 +726,51 @@ You've already seen the first-week snapshot from the calendar data Dex could rea
 
 📖 One more thing worth bookmarking: the **Dex Guide** at https://heydex.ai/help/ — a plain-English walkthrough of everything Dex can do, with copy-paste prompts to steal. Great for your first week."
 
-Then ask: "Want me to put a few gentle nudges in your calendar for your first few weeks? One a day, each with something to try. They're all-day reminders marked private and free, so they never block your time or make you look busy — and you can delete the whole thing in one tap."
+### Offer the first-weeks nudges
+
+Call `get_nudge_plan()`. If it returns `already_created: true`, skip this section entirely — they have them.
+
+Show them a real one before asking. Consent to an example beats consent to a description. Use the returned
+`example` verbatim; do not write your own:
+
+"One more thing. I can drop a few gentle nudges into your calendar over the next few weeks — one a day, each with
+something to try and why it helps. Reminders in your calendar work because they turn up where you're already
+looking, instead of needing you to remember Dex exists.
+
+Here's the first one, so you can see what you'd be getting:
+
+**[example date, e.g. Wed 29 Jul] — [example summary]**
+> [the first two lines of the example description]
+
+They're all-day reminders marked private and free, so they never block your time or make you look busy. Shall I
+add them?"
 
 Present two choices: **Yes, add them** and **No thanks**.
 
-- On **Yes, add them**: call `generate_nudge_calendar()`. Tell them the file is ready, give its returned path, and explain that opening it will offer to add a new calendar called Dex. On macOS, offer to open it for them with `open <path>`. Say plainly: choose "New Calendar" if asked, so it stays separate and is easy to remove.
-- On **No thanks**: say nothing more about it and move on. Do not ask again. Do not capture anything.
+**On No thanks:** say nothing more about it and move on. Do not ask again. Do not capture anything.
+
+**On Yes, add them**, work out how to create them, in this order:
+
+1. **A connected calendar you can write to.** Check the calendar tools actually available to you in this session.
+   You need one that can create an event that is **all-day**, marked **free**, and marked **private**. Create one
+   event per entry in the returned plan, using each entry's `date`, `summary` and `description` exactly as given,
+   and apply the entry's `recurrence` rule to the single entry that has one. Do not invent copy, do not reword,
+   and do not add reminders or alerts of any kind. If the user has more than one calendar, use the work calendar
+   chosen during setup, and ask which to use if that is unclear.
+   Then call `record_nudge_events(...)` with a `key` and `event_id` for every event you created, plus the
+   `calendar_id` and `date`. Without this, the user cannot ask Dex to remove them later.
+
+2. **Only all-day, free and private will do.** If the only calendar tool available cannot do all three, do NOT
+   create the events. Sixteen timed, busy blocks across someone's working days is worse than nothing, and it is
+   the opposite of what was promised in the offer. Fall back to step 3 and say plainly why.
+
+3. **The file fallback.** Call `generate_nudge_calendar()`, give the returned path, and explain that opening it
+   adds them to their calendar. On macOS, offer to open it with `open <path>`. Be honest that this route is
+   fiddlier: in Google Calendar they will need to create an empty calendar first and import into it, and it is
+   not practical on a phone.
+
+After creating them, confirm plainly: how many were added, when the first one lands, and that they can say
+"remove the Dex nudges" at any time to take them all out again.
 
 ---
 

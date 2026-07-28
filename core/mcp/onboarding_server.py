@@ -55,7 +55,12 @@ from core.paths import (
 from core.paths import (
     VAULT_ROOT as BASE_DIR,
 )
-from core.utils.nudge_calendar import build_nudge_calendar, is_dex_nudge_event
+from core.utils import nudge_ledger
+from core.utils.nudge_calendar import (
+    build_nudge_calendar,
+    build_nudge_plan,
+    is_dex_nudge_event,
+)
 
 # User-configured working week (defaults to Monday-Friday)
 try:
@@ -1483,6 +1488,116 @@ def generate_nudge_calendar() -> Dict[str, Any]:
     }
 
 
+
+def get_nudge_plan() -> Dict[str, Any]:
+    """Return the assistant handoff for direct calendar event creation."""
+
+    def _granola_connected() -> bool:
+        # Granola only changes the wording of one event. If its module cannot be
+        # imported or the lookup fails, fall back to the not-connected variant
+        # rather than failing the whole plan for an optional flourish.
+        try:
+            from core.mcp.granola_server import get_api_key
+
+            return get_api_key() is not None
+        except Exception as error:
+            logger.warning(f"Could not check the Granola connection: {error}")
+            return False
+
+    profile = _load_first_week_profile()
+    pillars = [
+        pillar.get('name', '') if isinstance(pillar, dict) else str(pillar)
+        for pillar in profile.get('pillars', [])
+    ]
+    pillars = [pillar.strip() for pillar in pillars if pillar.strip()]
+    plan = build_nudge_plan(
+        date.today(),
+        pillars=pillars,
+        granola_connected=_granola_connected(),
+    )
+    return {
+        "plan": plan,
+        "example": plan[0] if plan else None,
+        "already_created": nudge_ledger.already_created(),
+    }
+
+
+def record_nudge_events(events: Any) -> Dict[str, Any]:
+    """Validate and record calendar event ids reported by the assistant."""
+    if not isinstance(events, list):
+        raise ValueError("events must be a list")
+    for index, event in enumerate(events, start=1):
+        if not isinstance(event, dict):
+            raise ValueError(
+                f"Event {index} must be an object with key and event_id"
+            )
+        missing = [
+            field
+            for field in ("key", "event_id")
+            if not isinstance(event.get(field), str) or not event[field].strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"Event {index} is missing required field(s): {', '.join(missing)}"
+            )
+    return nudge_ledger.record_events(events)
+
+
+def forget_nudge_events() -> Dict[str, Any]:
+    """Return recorded events, then clear the local removal ledger."""
+    events = nudge_ledger.load_events()
+    forgotten_count = nudge_ledger.clear_events()
+    return {
+        "events": events,
+        "forgotten_count": forgotten_count,
+    }
+
+
+def generate_nudge_calendar() -> Dict[str, Any]:
+    """Write the optional onboarding nudge calendar and return concrete metadata."""
+
+    def _granola_connected() -> bool:
+        # Granola only changes the wording of one event. If its module cannot be
+        # imported or the lookup fails, fall back to the not-connected variant
+        # rather than failing the whole calendar for an optional flourish.
+        try:
+            from core.mcp.granola_server import get_api_key
+
+            return get_api_key() is not None
+        except Exception as error:
+            logger.warning(f"Could not check the Granola connection: {error}")
+            return False
+
+    profile = _load_first_week_profile()
+    pillars = [
+        pillar.get('name', '') if isinstance(pillar, dict) else str(pillar)
+        for pillar in profile.get('pillars', [])
+    ]
+    pillars = [pillar.strip() for pillar in pillars if pillar.strip()]
+    calendar_text = build_nudge_calendar(
+        date.today(),
+        pillars=pillars,
+        granola_connected=_granola_connected(),
+    )
+
+    calendar_path = (BASE_DIR / "System" / "dex-calendar.ics").resolve()
+    calendar_path.parent.mkdir(parents=True, exist_ok=True)
+    calendar_path.write_text(calendar_text, encoding="utf-8", newline="")
+
+    first_date_value = next(
+        line.partition(":")[2]
+        for line in calendar_text.splitlines()
+        if line.startswith("DTSTART;VALUE=DATE:")
+    )
+    return {
+        "path": str(calendar_path),
+        "event_count": calendar_text.count("BEGIN:VEVENT"),
+        "first_event_date": datetime.strptime(
+            first_date_value,
+            "%Y%m%d",
+        ).date().isoformat(),
+    }
+
 # ============================================================================
 # MCP SERVER SETUP
 # ============================================================================
@@ -1635,6 +1750,58 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                 },
                 "required": ["automatic"],
+            }
+        ),
+        types.Tool(
+            name="get_nudge_plan",
+            description="Return the first-weeks Dex nudge events as structured calendar data, including a real example and whether they were already created.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        types.Tool(
+            name="record_nudge_events",
+            description="Record the calendar event ids created from a Dex nudge plan so they can be removed later.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "events": {
+                        "type": "array",
+                        "description": "Created calendar events with their Dex plan keys and provider ids.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {
+                                    "type": "string",
+                                    "description": "Stable key from get_nudge_plan"
+                                },
+                                "event_id": {
+                                    "type": "string",
+                                    "description": "Calendar provider event id"
+                                },
+                                "calendar_id": {
+                                    "type": "string",
+                                    "description": "Calendar containing the event"
+                                },
+                                "date": {
+                                    "type": "string",
+                                    "description": "ISO date from get_nudge_plan"
+                                }
+                            },
+                            "required": ["key", "event_id"]
+                        }
+                    }
+                },
+                "required": ["events"]
+            }
+        ),
+        types.Tool(
+            name="forget_nudge_events",
+            description="Return all recorded Dex nudge event ids and clear the local ledger after reading them.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
             }
         ),
         types.Tool(
@@ -2180,6 +2347,48 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
         elif name == "set_entity_creation_default":
             result = create_success_response(
                 set_entity_creation_default(arguments.get('automatic'))
+            )
+            return [types.TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, cls=DateTimeEncoder),
+            )]
+        
+        elif name == "get_nudge_plan":
+            result = create_success_response(
+                get_nudge_plan(),
+                "Nudge plan ready",
+            )
+            return [types.TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, cls=DateTimeEncoder),
+            )]
+
+        elif name == "record_nudge_events":
+            try:
+                recorded = record_nudge_events(arguments.get("events"))
+            except ValueError as error:
+                result = create_error_response(
+                    str(error),
+                    field="events",
+                    suggestion=(
+                        "Include both key and event_id for every calendar event "
+                        "created from the nudge plan."
+                    ),
+                )
+            else:
+                result = create_success_response(
+                    recorded,
+                    "Nudge events recorded",
+                )
+            return [types.TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, cls=DateTimeEncoder),
+            )]
+
+        elif name == "forget_nudge_events":
+            result = create_success_response(
+                forget_nudge_events(),
+                "Nudge event ledger cleared",
             )
             return [types.TextContent(
                 type="text",

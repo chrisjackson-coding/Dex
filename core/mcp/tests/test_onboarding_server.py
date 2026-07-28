@@ -1083,3 +1083,212 @@ class TestCapabilityStep:
         assert "days:" in profile
         assert "sunday" in profile
         assert not paths["SESSION_FILE"].exists()
+
+
+class TestNudgePlanTools:
+    def test_tools_are_registered_with_event_handoff_schema(self):
+        tools = {
+            tool.name: tool
+            for tool in asyncio.run(onboarding_server.handle_list_tools())
+        }
+
+        assert {
+            "get_nudge_plan",
+            "record_nudge_events",
+            "forget_nudge_events",
+        }.issubset(tools)
+        record_schema = tools["record_nudge_events"].inputSchema
+        assert record_schema["required"] == ["events"]
+        assert record_schema["properties"]["events"]["items"]["required"] == [
+            "key",
+            "event_id",
+        ]
+
+    def test_get_nudge_plan_returns_first_event_example_and_creation_state(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from core.mcp import granola_server
+        from core.utils import nudge_ledger, working_week
+
+        class FixedDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 7, 28)
+
+        system = tmp_path / "System"
+        system.mkdir()
+        (system / "user-profile.yaml").write_text(
+            "pillars:\n"
+            "  - name: Customers\n"
+            "  - name: Product\n"
+            "working_week:\n"
+            "  days: [monday, tuesday, wednesday, thursday, friday]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("VAULT_PATH", str(tmp_path))
+        monkeypatch.setattr(onboarding_server, "BASE_DIR", tmp_path)
+        monkeypatch.setattr(
+            onboarding_server,
+            "SESSION_FILE",
+            system / ".onboarding-session.json",
+        )
+        monkeypatch.setattr(onboarding_server, "date", FixedDate)
+        monkeypatch.setattr(nudge_ledger, "DEX_RUNTIME_DIR", system / ".dex")
+        monkeypatch.setattr(
+            granola_server,
+            "get_api_key",
+            lambda: "grn_connected",
+        )
+        working_week._reset_cache()
+
+        try:
+            first = _decode_tool_result(
+                asyncio.run(onboarding_server.handle_call_tool("get_nudge_plan", {}))
+            )
+
+            assert first["success"] is True
+            assert first["data"]["plan"]
+            assert first["data"]["example"] == first["data"]["plan"][0]
+            assert first["data"]["already_created"] is False
+            assert first["data"]["plan"][0]["date"] == "2026-07-29"
+            assert any(
+                "You told Dex your big areas are Customers and Product."
+                in event["description"]
+                for event in first["data"]["plan"]
+            )
+            assert any(
+                event["summary"] == "Find out what you've promised people"
+                for event in first["data"]["plan"]
+            )
+
+            nudge_ledger.record_events(
+                [
+                    {
+                        "key": first["data"]["plan"][0]["key"],
+                        "event_id": "created-event",
+                        "calendar_id": "primary",
+                        "date": first["data"]["plan"][0]["date"],
+                    }
+                ]
+            )
+            second = _decode_tool_result(
+                asyncio.run(onboarding_server.handle_call_tool("get_nudge_plan", {}))
+            )
+
+            assert second["data"]["already_created"] is True
+        finally:
+            working_week._reset_cache()
+
+    def test_record_nudge_events_writes_created_event_metadata(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from core.utils import nudge_ledger
+
+        monkeypatch.setattr(
+            nudge_ledger,
+            "DEX_RUNTIME_DIR",
+            tmp_path / "System" / ".dex",
+        )
+        events = [
+            {
+                "key": "dex-one",
+                "event_id": "event-1",
+                "calendar_id": "primary",
+                "date": "2026-07-29",
+            }
+        ]
+
+        payload = _decode_tool_result(
+            asyncio.run(
+                onboarding_server.handle_call_tool(
+                    "record_nudge_events",
+                    {"events": events},
+                )
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["data"] == {"events": events}
+        assert nudge_ledger.load_events() == events
+
+    @pytest.mark.parametrize(
+        ("event", "missing_field"),
+        [
+            (
+                {
+                    "event_id": "event-1",
+                    "calendar_id": "primary",
+                    "date": "2026-07-29",
+                },
+                "key",
+            ),
+            (
+                {
+                    "key": "dex-one",
+                    "calendar_id": "primary",
+                    "date": "2026-07-29",
+                },
+                "event_id",
+            ),
+        ],
+    )
+    def test_record_nudge_events_rejects_missing_required_fields(
+        self,
+        event,
+        missing_field,
+    ):
+        payload = _decode_tool_result(
+            asyncio.run(
+                onboarding_server.handle_call_tool(
+                    "record_nudge_events",
+                    {"events": [event]},
+                )
+            )
+        )
+
+        assert payload["success"] is False
+        assert missing_field in payload["error"]
+        assert "Include both key and event_id" in payload["suggestion"]
+
+    def test_forget_nudge_events_returns_entries_before_clearing(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from core.utils import nudge_ledger
+
+        monkeypatch.setattr(
+            nudge_ledger,
+            "DEX_RUNTIME_DIR",
+            tmp_path / "System" / ".dex",
+        )
+        events = [
+            {
+                "key": "dex-one",
+                "event_id": "event-1",
+                "calendar_id": "primary",
+                "date": "2026-07-29",
+            },
+            {
+                "key": "dex-two",
+                "event_id": "event-2",
+                "calendar_id": "work",
+                "date": "2026-07-30",
+            },
+        ]
+        nudge_ledger.record_events(events)
+
+        payload = _decode_tool_result(
+            asyncio.run(onboarding_server.handle_call_tool("forget_nudge_events", {}))
+        )
+
+        assert payload["success"] is True
+        assert payload["data"] == {
+            "events": events,
+            "forgotten_count": 2,
+        }
+        assert nudge_ledger.load_events() == []
