@@ -50,6 +50,11 @@ exit 0
         """#!/bin/sh
 if [ "$1" = "-v" ]; then echo "v22.0.0"; exit 0; fi
 printf '%s\n' "$*" >> "$DEX_TEST_NODE_LOG"
+case "$*" in
+  *provision.cjs*--lifecycle-only*)
+    printf '%s\n' "$DEX_LIFECYCLE_PYTHON" >> "$DEX_TEST_LIFECYCLE_PYTHON_LOG"
+    ;;
+esac
 case "$DEX_TEST_SCENARIO:$2" in
   resume:--auto)
     if [ ! -f "$DEX_TEST_RESUME_SENTINEL" ]; then
@@ -94,6 +99,7 @@ exit 0
         {
             "PATH": f"{shim_dir}:/usr/bin:/bin",
             "DEX_TEST_NODE_LOG": str(tmp_path / "node.log"),
+            "DEX_TEST_LIFECYCLE_PYTHON_LOG": str(tmp_path / "lifecycle-python.log"),
             "DEX_TEST_RESUME_SENTINEL": str(tmp_path / "resume.once"),
             "DEX_TEST_SCENARIO": scenario,
         }
@@ -130,6 +136,20 @@ def test_fresh_git_install_routes_bounded_migration_through_auto_then_resume(tmp
     assert "Separating the Dex brain from your vault" in result.stdout
     assert "separate Git histories" in result.stdout
     assert "Dex installation complete" in result.stdout
+
+
+def test_lifecycle_adoption_runs_on_the_vault_interpreter_not_the_system_one(tmp_path: Path) -> None:
+    """The lifecycle step needs PyYAML, which only ever lands in the vault's own
+    virtual environment. A system Python cannot be given it on newer Homebrew and
+    Debian builds, so handing one over made a clean install fail outright."""
+    result, _ = _run_install(tmp_path, "resume")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    interpreters = (tmp_path / "lifecycle-python.log").read_text(encoding="utf-8").split()
+    assert interpreters, "install.sh never told the provisioner which Python to use"
+    for interpreter in interpreters:
+        assert interpreter.endswith(f".venv{os.sep}bin{os.sep}python"), interpreter
+        assert interpreter not in {"python", "python3"}
 
 
 def test_synced_folder_install_carries_explicit_override_into_resume(tmp_path: Path) -> None:

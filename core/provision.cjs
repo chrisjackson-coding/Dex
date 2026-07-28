@@ -188,10 +188,7 @@ function buildFreshProfile(template, overlay) {
       }
     } else profile[key] = value;
   }
-  // Setup offers concrete, qualified pages before asking whether future
-  // creation should be automatic. Until that explicit answer, suggest is the
-  // safe fresh-vault default.
-  profile.entity_creation = { mode: 'suggest' };
+  profile.entity_creation = { mode: 'auto' };
   for (const [room, definition] of Object.entries(portableContract.capabilities || {})) {
     const explicit = overlay.capabilities?.[room]?.enabled;
     if (typeof explicit === 'boolean' && typeof definition.config === 'string') {
@@ -442,14 +439,54 @@ print(json.dumps({
 }))
 `;
 
+// The lifecycle step imports PyYAML. That dependency is installed into the
+// vault's own virtual environment, never into the system Python — which on
+// newer Homebrew/Debian builds refuses new packages outright (PEP 668). When
+// nobody has named an interpreter, use the virtual environment if one exists.
+// But one that exists is not automatically a working one: a half-built or
+// unrelated .venv is a worse choice than the system Python, so take it only
+// once it has proved it can load what this step needs.
+function findVirtualenvPython(roots) {
+  const relative = process.platform === 'win32'
+    ? path.join('.venv', 'Scripts', 'python.exe')
+    : path.join('.venv', 'bin', 'python');
+  for (const root of roots) {
+    if (!root) continue;
+    const candidate = path.join(root, relative);
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+    } catch (_) {
+      continue; // no virtual environment here; try the next root
+    }
+    const probe = childProcess.spawnSync(candidate, ['-c', 'import yaml'], { encoding: 'utf8' });
+    if (!probe.error && probe.status === 0) return candidate;
+  }
+  return null;
+}
+
+// A Python traceback is not an error message a person can act on. Reduce the
+// interpreter's output to the one thing that went wrong, in plain words.
+function explainLifecycleFailure(output) {
+  const text = (output || '').trim();
+  const missingModule = text.match(/ModuleNotFoundError: No module named '([^']+)'/);
+  if (missingModule) {
+    return `Dex's Python is missing a piece it needs (${missingModule[1]}). `
+      + 'This usually means the setup step that installs it did not finish. '
+      + 'Run /dex-doctor and it will tell you how to put this right.';
+  }
+  const lastLine = text.split('\n').map(line => line.trim()).filter(Boolean).pop();
+  return lastLine || 'no details were reported';
+}
+
 function routeAdoptionThroughLifecycleService(
   vaultRoot,
   { pinCompanies = true, previewOnly = false } = {},
 ) {
+  const repoRoot = path.resolve(__dirname, '..');
   const python = process.env.DEX_LIFECYCLE_PYTHON
     || process.env.DEX_PYTHON
+    || findVirtualenvPython([vaultRoot, repoRoot])
     || (process.platform === 'win32' ? 'python' : 'python3');
-  const repoRoot = path.resolve(__dirname, '..');
   const separator = process.platform === 'win32' ? ';' : ':';
   const result = childProcess.spawnSync(
     python,
@@ -473,7 +510,10 @@ function routeAdoptionThroughLifecycleService(
   );
   if (result.error) throw new Error(`Lifecycle service could not start: ${result.error.message}`);
   if (result.status !== 0) {
-    throw new Error(`Lifecycle service refused adoption: ${(result.stderr || result.stdout).trim()}`);
+    throw new Error(
+      `Dex could not finish setting up its release catalog: ${
+        explainLifecycleFailure(result.stderr || result.stdout)}`,
+    );
   }
   try {
     return JSON.parse(result.stdout);

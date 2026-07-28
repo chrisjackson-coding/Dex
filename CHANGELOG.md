@@ -7,6 +7,16 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
+## [1.80.0] — 🧰 Setup finishes even when your computer's Python is patchy (2026-07-28)
+
+The last release stopped a first-time setup failing at its final step. This one closes the same gap everywhere else it could still bite, and makes the failure readable if it ever does happen.
+
+**What this fixes for you:**
+
+* **Updates and repairs get the same treatment as a fresh install.** Setting up was fixed to use the Python that Dex builds for itself. Now every other route that runs the same step finds and uses it too, instead of only the installer knowing where to look.
+* **A half-finished setup no longer gets trusted.** If Dex's own Python exists but is incomplete, Dex now checks before relying on it and falls back rather than failing in front of you.
+* **A sentence instead of a stack of code.** If this step ever does fail, it now names the missing piece in plain words and points you at `/dex-doctor`, rather than printing thirty lines of internal detail.
+
 ## [1.79.0] — 📋 Your meetings get dealt with without you asking (2026-07-28)
 
 Your meetings did arrive in Dex on their own — but turning them into something useful (updated pages for the people you met, tasks from what you agreed to do, tidy notes) still waited for you to ask. If you never asked, meetings quietly piled up half-done. The docs promised meetings "flow in on their own" — this release makes that promise true.
