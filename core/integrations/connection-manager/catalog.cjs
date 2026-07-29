@@ -68,6 +68,16 @@ const KEY_HEADER_OVERRIDES = {
 // An entry here forces Class-B key mode for that provider id and supplies the
 // request scheme verbatim. ${apiKey} is substituted by renderAuthHeaders.
 const KEY_PROVIDER_OVERRIDES = {
+  // Granola's official REST API uses a user-created Bearer API key. It is a
+  // Dex-native key connection rather than the catalog's dynamic-registration
+  // MCP entry, so it can work from the CLI with no desktop application.
+  granola: {
+    displayName: 'Granola',
+    proxyBaseUrl: 'https://public-api.granola.ai',
+    requestHeaders: { Authorization: 'Bearer ${apiKey}' },
+    verification: { method: 'GET', endpoint: '/v1/notes?page_size=1' },
+    docs: 'https://docs.granola.ai/',
+  },
   linear: {
     displayName: 'Linear (API key)',
     proxyBaseUrl: 'https://api.linear.app',

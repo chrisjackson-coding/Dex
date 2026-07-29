@@ -28,19 +28,26 @@ const health = require('./health.cjs');
 const presence = require('./presence.cjs');
 const { assertPinnedOrigin, isVetted } = require('./pinned-providers.cjs');
 
-function allowUnvetted(flags = {}) {
-  return flags['allow-unvetted'] !== undefined || process.env.DEX_CM_ALLOW_UNVETTED === '1';
+function hasExplicitProviderConsent(flags = {}) {
+  // `allow-unvetted` remains a compatibility alias for existing scripts.  New
+  // conversations use language about the user's choice, rather than implying a
+  // public security ranking of providers.
+  return (
+    flags['confirm-provider'] !== undefined ||
+    flags['allow-unvetted'] !== undefined ||
+    process.env.DEX_CM_ALLOW_UNVETTED === '1'
+  );
 }
 
-function requireUnvettedConsent(provider, flags = {}) {
+function requireProviderConsent(provider, flags = {}) {
   if (isVetted(provider)) return;
-  if (!allowUnvetted(flags)) {
+  if (!hasExplicitProviderConsent(flags)) {
     throw new Error(
-      `'${provider}' is not security-reviewed. Re-run with --allow-unvetted or ` +
-        'DEX_CM_ALLOW_UNVETTED=1 to explicitly opt in.'
+      `Confirm that you want Dex to connect '${provider}' before sharing credentials: ` +
+        're-run with --confirm-provider.'
     );
   }
-  console.log(`warning: '${provider}' is not security-reviewed; continuing because you explicitly opted in.`);
+  console.log(`Connecting '${provider}' with your explicit confirmation.`);
 }
 
 function parseFlags(args) {
@@ -68,28 +75,25 @@ async function cmdConnect(
   { presenceProvider, oauthProvider = oauth, openBrowser: openBrowserFn = openBrowser } = {}
 ) {
   if (!provider) throw new Error('Usage: node connect.cjs connect <provider> [--scopes a,b,c] [--as <alias>]');
-  requireUnvettedConsent(provider, flags);
+  requireProviderConsent(provider, flags);
   const providerConfig = catalog.getProviderConfig(provider);
   if (!providerConfig.supported) {
     throw new Error(`'${provider}' is not connectable yet: ${providerConfig.reason} It remains available to browse in providers.`);
-  }
-  if (!providerConfig.verified) {
-    console.log('Unverified provider — advanced tier, expect quirks.');
   }
   // Multi-account: `--as <alias>` connects a second account (provider:alias); bare = the default.
   const { connId, alias } = store.parseConnectionId(flags.as ? `${provider}:${flags.as}` : provider);
   const app = store.getOAuthApp(provider); // OAuth app is shared across a provider's accounts
   if (!app || !app.clientId) {
-    // Non-technical ICP: the user never hand-edits a file. The /connect skill captures the
-    // client id/secret in chat and runs `register-app` to write them — this error just routes there.
-    console.error(
-      `'${provider}' has no OAuth app registered yet.\n` +
-        `Dex can set this up with you — no file editing. It will ask for the client id and secret\n` +
-        `from ${provider}'s developer console and save them for you:\n` +
-        `  node connect.cjs register-app ${provider}      (opens clear terminal prompts; the secret stays hidden)\n` +
-        `Then: node connect.cjs connect ${provider}`
+    // Dex must never prompt an end user to create an OAuth app or paste a client
+    // secret into chat.  A managed OAuth client has to be supplied by Dex's
+    // operator; until then, tell the user plainly that this path is unavailable.
+    const error = new Error(
+      `Dex-managed sign-in for '${provider}' is not configured on this installation yet.\n` +
+        'You do not need to create an app, copy a browser cookie, or configure callback ports.\n' +
+        'Use an existing Claude connector if your workspace offers one, or ask your Dex administrator to enable this connection.'
     );
-    process.exit(1);
+    error.code = 'DEX_CM_OAUTH_APP_UNCONFIGURED';
+    throw error;
   }
   const scopes = catalog.normalizeScopes(provider, flags.scopes ? flags.scopes.split(',') : []);
 
@@ -317,7 +321,7 @@ async function cmdSetKey(service, flags, { presenceProvider, readSecret = readSe
   // Catalog lookups go by PROVIDER (the auth scheme); the key is SAVED under the connId.
   const parsed = store.parseConnectionId(service);
   const provider = parsed.provider;
-  requireUnvettedConsent(provider, flags);
+  requireProviderConsent(provider, flags);
   const alias = flags.as || parsed.alias || null;
   const connId = alias ? `${provider}:${alias}` : provider;
 
@@ -393,9 +397,9 @@ async function cmdSetKey(service, flags, { presenceProvider, readSecret = readSe
     ? ' Verified live.'
     : probe === 'failed'
       ? ' (probe failed — marked needs_reauth)'
-      : isVetted(provider)
-        ? ` (not yet verified — run: node connect.cjs probe ${connId})`
-        : ' (automatic verification skipped because this provider is not security-reviewed)';
+        : isVetted(provider)
+        ? ` (not yet checked live — run: node connect.cjs probe ${connId})`
+        : ' (automatic live check is unavailable for this connection)';
   console.log(`✅ Stored ${descriptor.displayName}${alias ? ` (${connId})` : ''} key (encrypted) in ${store.credentialsDir()}/tokens/.${note}`);
 }
 
@@ -435,7 +439,7 @@ function cmdStatus(flags = {}) {
   console.log('  connection         status                 expires                       last verified');
   for (const r of rows) {
     const exp = r.expiresAt ? new Date(r.expiresAt).toISOString() : '—';
-    const status = r.status === 'connected' && !r.verified ? 'connected (unverified)' : r.status;
+    const status = r.status === 'connected' && !r.verified ? 'connected (not checked live)' : r.status;
     console.log(
       `  ${icon[r.status] || '•'} ${r.service.padEnd(18)} ${status.padEnd(22)} ${exp.padEnd(29)} ${r.lastVerifiedAt || '—'}${
         r.error ? '  (' + r.error + ')' : ''
@@ -449,14 +453,14 @@ async function cmdProbe(service, flags = {}) {
   if (service) {
     const reg = store.getConnection(service) || {};
     const provider = reg.provider || store.parseConnectionId(service).provider;
-    requireUnvettedConsent(provider, flags);
+    requireProviderConsent(provider, flags);
   } else {
     const unvetted = new Set(
       store.listConnections().map((entry) => entry.provider).filter((provider) => provider && !isVetted(provider))
     );
-    for (const provider of unvetted) requireUnvettedConsent(provider, flags);
+    for (const provider of unvetted) requireProviderConsent(provider, flags);
   }
-  const results = await health.probeConnections(service, { allowUnvetted: allowUnvetted(flags) });
+  const results = await health.probeConnections(service, { allowUnvetted: hasExplicitProviderConsent(flags) });
   const broken = results.some((result) => result.status === 'needs_reauth');
   if (flags.json !== undefined) {
     process.stdout.write(`${JSON.stringify({ results })}\n`);

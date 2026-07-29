@@ -52,7 +52,7 @@ Once connected, Dex can:
 
 ## Privacy
 
-Dex reads your Granola data through Granola's official API using a key you create. The API key is stored locally in a `.env` file at your vault root — it is **gitignored and never committed**. Only YOUR Granola account is accessible (the key is scoped to your login). Nothing is sent anywhere except Granola's own API.
+Dex reads your Granola data through Granola's official API using a key you create. New keys are stored **encrypted on this Mac** by Dex's connection manager; the encryption key is held in macOS Keychain when it is available. Only your Granola account is accessible (the key is scoped to your login). Nothing is sent anywhere except Granola's own API.
 
 ## When to Run
 
@@ -66,14 +66,14 @@ Dex reads your Granola data through Granola's official API using a key you creat
 
 ## Setup Flow
 
-> Throughout this flow, **Dex performs every file action for the user**. Never ask the user to open, create, or hand-edit `.env` or any other file. They only ever paste their key into the chat — Dex does the rest.
+> Throughout this flow, **Dex performs every file action for the user**. Never ask the user to open, create, or hand-edit `.env` or any other file. Ask them to paste the key into Dex's hidden terminal prompt, not into chat, so it cannot appear in the conversation transcript.
 
 ### Step 1: Check if Already Connected
 
 1. Read `System/integrations/config.yaml` for a `granola` section.
-2. Check whether `GRANOLA_API_KEY` is already configured:
-   - First check `process.env.GRANOLA_API_KEY`.
-   - If absent, load the vault root `.env` file (at `VAULT_ROOT`) and parse a `GRANOLA_API_KEY=...` line from it.
+2. Check whether Granola is already connected through Dex's connection manager.
+   - Run `node core/integrations/connection-manager/connect.cjs status` and look for Granola.
+   - Legacy `GRANOLA_API_KEY` environment and `.env` values remain readable for existing users, but do not create or update them.
 3. If a key is found, run the verification request from **Step 5** silently.
    - If it succeeds, tell the user they're already connected and skip to **Step 7** (Reconfiguration / what's enabled).
    - If it returns 401, the key is stale — continue to Step 2 to replace it.
@@ -119,35 +119,32 @@ If there's no API section in Settings, your plan doesn't support API keys yet
 ### Step 4: Ask Them to Paste the Key
 
 ```
-Paste your Granola API key here and I'll save it for you securely.
-(It starts with grn_ — I'll store it locally and never commit it.)
+I will open a hidden prompt for your Granola API key. It starts with grn_.
+Please paste it there — not into this chat or a file.
 ```
 
-Wait for the user to paste the key.
-
-- Do a light sanity check: it should look like `grn_...`. If it clearly doesn't (e.g. they pasted something else), ask them to re-copy it from Granola's API settings.
-- **Never** ask the user to put the key in a file themselves — they only paste it into the chat.
+Do a light sanity check after the hidden prompt. If it clearly is not a `grn_...`
+key, ask the user to re-copy it from Granola's API settings. Never ask the user
+to put the key in a file or conversation.
 
 ### Step 5: Store and Verify the Key
 
 **Store it (Dex does this — not the user):**
 
-1. Locate the vault root `.env` file (`VAULT_ROOT/.env`). Create it if it doesn't exist.
-2. Write or update the line `GRANOLA_API_KEY=<pasted key>` in that file.
-   - If a `GRANOLA_API_KEY=` line already exists, replace it; otherwise append it.
-3. Confirm `.env` is gitignored (it is by convention — never commit it).
+1. Ask for a final confirmation: "Save this Granola key encrypted on this Mac? [1. Save / 2. Cancel]"
+2. On confirmation, run the connection-manager command below from the Dex workspace. It opens a hidden prompt for the key; never include the key in a command, environment variable, or chat message:
+
+   ```bash
+   node core/integrations/connection-manager/connect.cjs set-key granola --confirm-provider
+   ```
+
+3. Dex stores the key encrypted under `System/credentials/`; no `.env` file is created or changed.
 
 **Verify it with a real request:**
 
-Make a single test call against the official API:
-
-```bash
-curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $GRANOLA_API_KEY" \
-  "https://public-api.granola.ai/v1/notes?page_size=1"
-```
-
-(Equivalently: `GET https://public-api.granola.ai/v1/notes?page_size=1` with header `Authorization: Bearer <key>`.)
+The connection manager makes the one bounded check itself when saving. It uses
+the encrypted credential directly; do not print a curl command or expose an
+authorization header.
 
 - **On success (HTTP 200):**
   ```
@@ -182,14 +179,14 @@ granola:
   configured_at: YYYY-MM-DD
   auth_type: api_key
   api_base_url: https://public-api.granola.ai
-  key_env_var: GRANOLA_API_KEY   # value lives in VAULT_ROOT/.env, never here
+  credential_store: connection-manager   # encrypted locally; never stored in this file
   account: user@example.com        # from the owner.email in the test response
   features:
     meeting_sync: true
     transcripts: true
 ```
 
-Never write the API key value itself into `config.yaml` or any committed file — only the env var name. The key lives solely in the gitignored `.env`.
+Never write the API key value into `config.yaml`, `.env`, a command, or any committed file. Dex's connection manager is the only new-key storage path.
 
 ### Step 7: Confirm with Capability Cascade
 
@@ -216,7 +213,7 @@ You can re-run /granola-setup anytime to rotate your key or disconnect.
 
 These rules apply wherever Dex reads Granola data. The skill agent must follow them exactly so every Granola-aware workflow behaves consistently.
 
-- **API key env var:** `GRANOLA_API_KEY`. Read `process.env.GRANOLA_API_KEY` first; if absent, load `VAULT_ROOT/.env` and parse `GRANOLA_API_KEY=...` from it.
+- **Credential lookup:** use the connection manager first. Existing `GRANOLA_API_KEY` environment and vault-root `.env` values remain a backwards-compatible read path only; do not add new values there.
 - **No key configured → no error.** Log this friendly one-liner and exit cleanly (exit 0 / return empty):
   ```
   Granola not connected — run /granola-setup to add your Granola API key (requires a Granola Business plan).
@@ -257,7 +254,7 @@ The key works but Dex sees no notes. Check:
 
 ### "Granola not connected" keeps appearing
 
-That means no `GRANOLA_API_KEY` is configured. Run `/granola-setup` to add one. (Dex never errors out when the key is missing — it just nudges you to set it up.)
+That means Granola is not connected. Run `/granola-setup` to add an encrypted local key. (Dex never errors out when the key is missing — it just nudges you to set it up.)
 
 ### Rate Limiting (429)
 
@@ -272,7 +269,7 @@ If the user runs `/granola-setup` when already configured:
 1. Verify the current key with the Step 5 test request.
 2. Show the current config from `System/integrations/config.yaml`.
 3. Offer options:
-   - **Rotate the key** — paste a new `grn_...` key; Dex updates `VAULT_ROOT/.env`.
+   - **Rotate the key** — use the encrypted connection-manager setup again with a new `grn_...` key.
    - **Re-test the connection.**
    - **Disconnect Granola.**
 
@@ -285,5 +282,5 @@ If the user wants to disconnect:
    granola:
      enabled: false
    ```
-2. Remove (or comment out) the `GRANOLA_API_KEY=...` line in `VAULT_ROOT/.env` for them.
+2. Run `node core/integrations/connection-manager/connect.cjs disconnect granola` after confirming that the user wants the encrypted local credential removed. Do not modify a legacy `.env` key unless the user explicitly asks to remove it.
 3. Confirm: "Granola is disconnected. Meeting sync and transcripts will pause. Run `/granola-setup` anytime to reconnect."

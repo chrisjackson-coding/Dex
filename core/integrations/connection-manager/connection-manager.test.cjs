@@ -100,7 +100,7 @@ test('store: credentials dir refuses to guess when vault env vars are unset', ()
   );
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Set DEX_VAULT to your vault folder before using connections/);
+  assert.match(result.stderr, /Dex needs to know which workspace should own this connection/);
 });
 
 // ---- catalog ----------------------------------------------------------------

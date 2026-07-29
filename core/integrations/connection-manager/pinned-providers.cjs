@@ -28,7 +28,7 @@ let testPins = null;
 
 class OriginUnpinnedError extends Error {
   constructor(providerId, kind, urlString) {
-    super(`Refusing credential-bearing ${kind} request for '${providerId}': destination is not a reviewed HTTPS origin.`);
+    super(`Refusing credential-bearing ${kind} request for '${providerId}': destination is not an approved HTTPS origin.`);
     this.name = 'OriginUnpinnedError';
     this.code = 'DEX_CM_ORIGIN_UNPINNED';
     this.exitCode = 1;

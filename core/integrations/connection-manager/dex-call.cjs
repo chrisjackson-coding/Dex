@@ -162,7 +162,12 @@ async function main() {
   let body = flags.body;
   if (flags.bodyFile) body = require('fs').readFileSync(flags.bodyFile, 'utf8');
 
-  const allowed = flags['allow-unvetted'] !== undefined || process.env.DEX_CM_ALLOW_UNVETTED === '1';
+  // Keep the legacy flag for scripts already in the wild, but make new flows
+  // express the user's explicit choice rather than a provider ranking.
+  const allowed =
+    flags['confirm-provider'] !== undefined ||
+    flags['allow-unvetted'] !== undefined ||
+    process.env.DEX_CM_ALLOW_UNVETTED === '1';
   let ctx;
   try {
     const response = await brokerRequest({
@@ -176,13 +181,13 @@ async function main() {
       if (brokerError.category === 'unvetted') {
         const provider = brokerError.provider || String(service).split(':')[0];
         console.error(
-          `Refusing authenticated call for '${provider}': this provider is not security-reviewed. ` +
-            'Re-run with --allow-unvetted or DEX_CM_ALLOW_UNVETTED=1 to opt in.'
+          `Confirm that you want Dex to send credentials to '${provider}' before continuing. ` +
+            'Re-run with --confirm-provider.'
         );
       } else if (brokerError.category === 'presence_required') {
         console.error(
           brokerError.message ||
-            `${service} requires verified user presence, which only the Dex desktop app can provide — it cannot be completed from the command line.`
+            `${service} requires user confirmation before Dex can reveal a raw credential.`
         );
       } else {
         console.error(brokerError.message || 'Credential broker request failed.');
@@ -204,7 +209,7 @@ async function main() {
     process.exit(e.exitCode || 1);
   }
   if (req.authAttached && ctx.provider && !isVetted(ctx.provider)) {
-    console.error(`warning: '${ctx.provider}' is not security-reviewed; sending credentials because you explicitly opted in.`);
+    console.error(`Sending credentials to '${ctx.provider}' with your explicit confirmation.`);
   }
 
   const reqHeaders = { ...req.headers };

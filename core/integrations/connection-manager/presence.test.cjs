@@ -7,10 +7,10 @@ const presence = require('./presence.cjs');
 
 test.afterEach(() => presence.setPresenceProvider(null));
 
-test('B1 requires presence only for privileged raw exports and first connect', () => {
+test('B1 requires presence only for privileged raw exports', () => {
   assert.equal(presence.requiresPresence('access-token'), true);
   assert.equal(presence.requiresPresence('full'), true);
-  assert.equal(presence.requiresPresence('connect'), true);
+  assert.equal(presence.requiresPresence('connect'), false);
   assert.equal(presence.requiresPresence('rendered'), false);
   assert.equal(presence.requiresPresence('get-token-default'), false);
   assert.equal(presence.requiresPresence('status'), false);
@@ -90,7 +90,7 @@ test('an injected denying provider still refuses the operation', async () => {
   });
 
   await assert.rejects(
-    presence.assertPresence('linear:injected-denied', 'connect', {
+    presence.assertPresence('linear:injected-denied', 'access-token', {
       detectHostBroker: async () => {
         hostDetections += 1;
         return { reachable: false, authenticated: false };
@@ -186,7 +186,7 @@ test('standalone CLI allows connect when no host, command, or injection exists',
     assert.equal(provider.kind, 'standalone');
     assert.equal(provider.standalone, true);
 
-    await presence.assertPresence('linear:standalone', 'connect', {
+    await presence.assertPresence('linear:standalone', 'access-token', {
       detectHostBroker: async () => ({ reachable: false, authenticated: false }),
     });
   } finally {
@@ -210,7 +210,7 @@ test('reachable authenticated host broker keeps presence enforcement fail-closed
     assert.equal(provider.kind, 'unavailable');
 
     await assert.rejects(
-      presence.assertPresence('linear:desktop-hosted', 'connect', { detectHostBroker }),
+      presence.assertPresence('linear:desktop-hosted', 'access-token', { detectHostBroker }),
       { code: 'DEX_CM_PRESENCE_REQUIRED', category: 'presence_required' }
     );
     assert.equal(detections, 2);
@@ -228,7 +228,7 @@ test('provider denial throws the typed presence-required error', async () => {
     (error) =>
       error.code === 'DEX_CM_PRESENCE_REQUIRED' &&
       error.category === 'presence_required' &&
-      /presence/i.test(error.message)
+      /confirmation/i.test(error.message)
   );
 });
 

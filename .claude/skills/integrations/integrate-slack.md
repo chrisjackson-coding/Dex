@@ -1,118 +1,63 @@
-# Slack Integration Setup Guide
+# Slack Integration Setup
 
-Start this setup through `/integrate-mcp`.
+Start this setup through `/integrate-mcp` or `/connect`.
 
-## Purpose
-Guide users through setting up Slack integration with Dex. Supports easy cookie auth (no bot required) or traditional bot token auth.
+## The safe default
 
-## When to Use
-- User says "connect slack", "set up slack", "integrate slack"
-- During onboarding when user indicates they use Slack
-- When user asks to search Slack or access Slack messages
+First check whether Slack is already available through the user's Claude
+workspace connector. If it is, use that connection directly. Do not ask the
+user to create a Slack app, find a browser cookie, open developer tools, paste
+a token, or configure a localhost port.
 
-## Prerequisites
-- Slack account
-- Browser access to Slack (for cookie auth) OR workspace admin access (for bot auth)
+Those routes are fragile, can expose a credential in a chat or terminal
+transcript, and often require workspace-administrator approval.
 
-## Flow
+## What to say
 
-### Step 1: Check Existing Setup
-```python
-from core.integrations.detect import detect_integration, load_claude_config
-from core.integrations.slack.setup import is_installed, get_setup_instructions, install
+1. **Already connected through Claude**
 
-status = detect_integration("slack", load_claude_config() or {})
+   ```
+   Good news — Slack is already available in this workspace. I can use the
+   access your workspace has approved. Would you like me to look for anything
+   specific?
+   ```
 
-if status["installed"]:
-    if status["is_dex_recommended"]:
-        print("✅ Slack is already set up with the recommended package!")
-    else:
-        print(f"⚠️ You have Slack configured using: {status['package']}")
-        print(f"Recommendation: {status['recommendation']}")
-```
+2. **Not connected, and no Dex-managed Slack app is configured**
 
-### Step 2: Show Instructions (if needed)
-```python
-print(get_setup_instructions())
-```
+   ```
+   Slack is not connected here yet. You do not need to create an app or deal
+   with ports. Dex-managed Slack sign-in is not available on this installation
+   yet, so the next safe step is for your Dex/workspace administrator to enable
+   it. I can keep setting up the rest of Dex without Slack.
+   ```
 
-Present both options:
-- **Cookie auth** (recommended for most users) - No setup required, uses browser session
-- **Bot token auth** - More control, requires creating Slack app
+3. **Workspace blocks or requires approval**
 
-### Step 3: Collect Credential
-Ask user for their credential:
-- `xoxd-...` = Browser cookie (from developer tools)
-- `xoxb-...` = Bot token (from Slack app)
-- `xoxp-...` = User token (from Slack app)
+   ```
+   Your Slack workspace requires an administrator to approve this connection.
+   Nothing has been connected and no messages have been read. Ask an admin to
+   approve the Dex Slack connection, then come back here and we will continue.
+   ```
 
-### Step 4: Install
-```python
-success, message = install(credential)
-print(message)
-```
+## If a connection exists
 
-### Step 5: Confirm and Explain
-- Remind to restart Claude Desktop
-- Explain cookie refresh if using cookie auth
-- Show what they can now do
+Describe the requested scope before reading anything. For onboarding, default
+to a bounded, read-only scan: the channels and date range the user selects.
+Never imply that a personal Slack account gives access to a work workspace; the
+account must be a member of the workspace being connected.
 
-## Key Messages
+## Error handling
 
-**Success (Cookie Auth):**
-> ✅ Slack connected using your browser session!
-> 
-> You can now:
-> - Search Slack: "What did Sarah say about the Q1 budget?"
-> - Get meeting context: "Show me recent Slack with [person]"
-> - Track commitments: "What did I promise in Slack this week?"
->
-> **Restart Claude Desktop** to activate.
->
-> **Note:** You may need to refresh the cookie when you re-login to Slack in your browser.
+| Situation | User-facing response |
+|---|---|
+| No workspace/connection selected | "Slack is not connected here yet. We can continue without it." |
+| Admin approval required | "Your workspace needs an admin to approve Slack access. Nothing has changed." |
+| Dex-managed app not configured | "You do not need to create an app. This sign-in is not available on this installation yet." |
+| OAuth callback problem | "The sign-in could not finish. The temporary browser callback is an internal detail; no action is needed from you. Try again after the connection is enabled." |
 
-**Success (Bot Token):**
-> ✅ Slack connected using bot token!
-> 
-> Your Slack app has been configured. You can now search messages and get meeting context.
->
-> **Restart Claude Desktop** to activate.
+## Do not use
 
-**Already Configured:**
-> Slack is already connected. Want me to:
-> 1. **Test the connection**
-> 2. **Reconfigure with new credentials**
-> 3. **Switch auth method** (cookie ↔ bot)
-
-## Error Handling
-
-| Error | Response |
-|-------|----------|
-| Invalid credential | "That doesn't look like a Slack credential. Expected: `xoxd-` (cookie), `xoxb-` (bot), or `xoxp-` (user token)" |
-| Cookie expired | "Your Slack cookie may have expired. Log into Slack in your browser and grab a fresh cookie." |
-| Insufficient permissions | "Your bot token may not have the required scopes. Ensure it has: channels:history, groups:history, im:history, search:read" |
-
-## Cookie Auth Quick Reference
-
-For users who need help finding their cookie:
-
-```
-1. Open slack.com in Chrome/Firefox/Safari
-2. Log into your workspace
-3. Open Developer Tools (F12 or Cmd+Option+I)
-4. Go to Application → Cookies → https://app.slack.com
-5. Find the cookie named "d"
-6. Copy the entire value (starts with xoxd-)
-```
-
-## Analytics Event
-```python
-fire_event('integration_slack_completed', {
-    'auth_type': 'cookie' | 'bot' | 'user',
-    'was_upgrade': status.get("installed", False)
-})
-```
-
-## Related Skills
-- `/integrate-mcp` - Connect another tool
-- `/meeting-prep` - Uses Slack context when available
+- Browser-cookie authentication or DevTools extraction
+- User-created Slack apps as a normal onboarding route
+- Pasting Slack client secrets, bot tokens, user tokens, or cookies into chat
+- Instructions that expose callback ports as a user setup task

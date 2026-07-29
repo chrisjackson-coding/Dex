@@ -372,7 +372,7 @@ async function probeConnection(service, options = {}) {
   const reg = authenticatedCredentialRegistry(connId) || {};
   const provider = reg.provider || store.parseConnectionId(connId).provider;
   if (!isVetted(provider) && options.allowUnvetted !== true) {
-    throw new Error(`${provider} is not security-reviewed; verification was skipped.`);
+    throw new Error(`${provider} needs explicit confirmation before Dex runs a live connection check.`);
   }
   const token = store.loadToken(connId);
   if (!token) throw new Error(`${connId} is not connected.`);

@@ -264,7 +264,7 @@ test('privileged broker denial returns presence_required without releasing a sec
   }
 });
 
-test('set-key requires mocked presence before the first credential save', async () => {
+test('set-key saves from an explicit foreground CLI flow without desktop presence', async () => {
   const connId = 'linear:first-connect-approved';
   const prompts = [];
   const provider = {
@@ -281,49 +281,47 @@ test('set-key requires mocked presence before the first credential save', async 
     });
 
     assert.equal(store.loadToken(connId).apiKey, 'FIRST-CONNECT-SECRET');
-    assert.deepEqual(prompts, [{ connId, op: 'connect' }]);
+    assert.deepEqual(prompts, []);
   } finally {
     if (store.getConnection(connId)) store.deleteToken(connId);
   }
 });
 
-test('set-key denial stores nothing and cannot overwrite an existing credential', async () => {
+test('set-key replaces a credential from an explicit foreground CLI flow without desktop presence', async () => {
   const deniedId = 'linear:first-connect-denied';
   const deniedProvider = { available: true, verify: async () => false };
-  await assert.rejects(
-    connect.cmdSetKey(deniedId, { 'no-probe': 'true' }, {
+  try {
+    await connect.cmdSetKey(deniedId, { 'no-probe': 'true' }, {
       presenceProvider: deniedProvider,
       readSecret: async () => 'DENIED-FIRST-CONNECT-SECRET',
-    }),
-    { code: 'DEX_CM_PRESENCE_REQUIRED', category: 'presence_required' }
-  );
-  assert.equal(store.getConnection(deniedId), null);
+    });
+    assert.equal(store.loadToken(deniedId).apiKey, 'DENIED-FIRST-CONNECT-SECRET');
+  } finally {
+    if (store.getConnection(deniedId)) store.deleteToken(deniedId);
+  }
 
   const reconnectId = 'linear:reconnect-denied';
   store.saveApiKey(reconnectId, { apiKey: 'OLD-SECRET' }, { provider: 'linear', authMode: 'API_KEY' });
   let reconnectPrompts = 0;
   try {
-    await assert.rejects(
-      connect.cmdSetKey(reconnectId, { 'no-probe': 'true' }, {
-        presenceProvider: {
-          available: true,
-          async verify() {
-            reconnectPrompts += 1;
-            return false;
-          },
+    await connect.cmdSetKey(reconnectId, { 'no-probe': 'true' }, {
+      presenceProvider: {
+        available: true,
+        async verify() {
+          reconnectPrompts += 1;
+          return false;
         },
-        readSecret: async () => 'NEW-SECRET',
-      }),
-      { code: 'DEX_CM_PRESENCE_REQUIRED', category: 'presence_required' }
-    );
-    assert.equal(store.loadToken(reconnectId).apiKey, 'OLD-SECRET');
-    assert.equal(reconnectPrompts, 1);
+      },
+      readSecret: async () => 'NEW-SECRET',
+    });
+    assert.equal(store.loadToken(reconnectId).apiKey, 'NEW-SECRET');
+    assert.equal(reconnectPrompts, 0);
   } finally {
     if (store.getConnection(reconnectId)) store.deleteToken(reconnectId);
   }
 });
 
-test('OAuth connect requires mocked presence before the first token save', async () => {
+test('OAuth connect saves from an explicit browser flow without desktop presence', async () => {
   const connId = 'google:presence-oauth';
   store.setOAuthApp('google', { clientId: 'TEST-CLIENT', clientSecret: 'TEST-SECRET' });
   const prompts = [];
@@ -355,7 +353,7 @@ test('OAuth connect requires mocked presence before the first token save', async
     });
 
     assert.equal(store.loadToken(connId).access_token, 'OAUTH-FIRST-CONNECT');
-    assert.deepEqual(prompts, [{ connId, op: 'connect' }]);
+    assert.deepEqual(prompts, []);
   } finally {
     if (store.getConnection(connId)) store.deleteToken(connId);
   }
@@ -386,7 +384,7 @@ test('accessor CLIs clearly surface presence_required with exit code 1', async (
     env
   );
   assert.equal(getToken.status, 1);
-  assert.match(getToken.stderr, /user presence/i);
+  assert.match(getToken.stderr, /user confirmation/i);
 
   const dexCall = await runCli(
     path.join(__dirname, 'dex-call.cjs'),
@@ -394,7 +392,7 @@ test('accessor CLIs clearly surface presence_required with exit code 1', async (
     env
   );
   assert.equal(dexCall.status, 1);
-  assert.match(dexCall.stderr, /user presence/i);
+  assert.match(dexCall.stderr, /user confirmation/i);
 });
 
 test('rendered broker auth retains key-in-URL redaction without exposing an apiKey field', async () => {

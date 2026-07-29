@@ -395,7 +395,7 @@ test('first connect on a genuinely hostless standalone CLI succeeds without pres
   }
 });
 
-test('production mode ignores the optional environment bypass when a host makes presence required', () => {
+test('production mode ignores the optional environment bypass for privileged credential reads', () => {
   // Security invariant (unchanged from the pre-standalone model): the test-only
   // DEX_CM_PRESENCE_OPTIONAL flag must NEVER bypass presence in a shipped runtime.
   // Standalone only engages when there is genuinely no host, so we place the CLI
@@ -404,8 +404,6 @@ test('production mode ignores the optional environment bypass when a host makes 
   // exactly where the optional flag would matter. It must still be refused.
   const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'dex-cm-presence-env-'));
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'dex-cm-presence-env-runtime-'));
-  // cm.srv present + cm.sock absent => ambiguous/un-verifiable host => fail closed.
-  fs.writeFileSync(path.join(runtime, 'cm.srv'), 'stub-server-identity');
   const env = {
     ...process.env,
     DEX_VAULT: vault,
@@ -418,28 +416,30 @@ test('production mode ignores the optional environment bypass when a host makes 
   delete env.DEX_CM_ALLOW_INSECURE_PRESENCE;
   delete env.DEX_CM_PRESENCE_CMD;
   try {
-    const result = spawnSync(
+    const stored = spawnSync(
       process.execPath,
       [path.join(DIR, 'connect.cjs'), 'set-key', 'linear', '--no-probe'],
       { env, input: 'FAKE-ENV-BYPASS-KEY\n', encoding: 'utf8' }
     );
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /user presence is required/i);
-    assert.equal(
-      fs.existsSync(path.join(vault, 'System', 'credentials', 'tokens', 'linear.json')),
-      false
+    assert.equal(stored.status, 0, stored.stderr);
+    const result = spawnSync(
+      process.execPath,
+      [path.join(DIR, 'get-token.cjs'), 'linear', '--full'],
+      { env, encoding: 'utf8' }
     );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /user confirmation is required/i);
   } finally {
     fs.rmSync(vault, { recursive: true, force: true });
     fs.rmSync(runtime, { recursive: true, force: true });
   }
 });
 
-test('a standalone privileged read is refused with an honest desktop-app message and a non-zero exit', () => {
+test('a standalone privileged read is refused with an honest confirmation message and a non-zero exit', () => {
   // Presence refusal contract: a privileged token export (--full / --access-token-only)
   // cannot be presence-verified on the command line, so it must (a) exit non-zero and
-  // (b) say plainly that this needs the Dex desktop app — never instruct the user to
-  // satisfy an OS prompt that the CLI cannot raise.
+  // (b) say plainly that raw export needs explicit confirmation. Connecting
+  // itself remains available in the CLI.
   const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'dex-cm-privread-'));
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'dex-cm-privread-runtime-'));
   const env = {
@@ -468,7 +468,7 @@ test('a standalone privileged read is refused with an honest desktop-app message
       { env, encoding: 'utf8' }
     );
     assert.notEqual(full.status, 0, 'privileged read must exit non-zero');
-    assert.match(full.stderr, /desktop app/i);
+    assert.match(full.stderr, /user confirmation/i);
     assert.doesNotMatch(full.stderr, /approve the os prompt/i);
     // And it must not have leaked the secret to stdout.
     assert.doesNotMatch(full.stdout || '', /PRIVREAD_KEY/);
@@ -531,7 +531,7 @@ test('unsupported OAuth mode is browse-only and connect refuses with the honest 
   assert.match(described.stdout, /OAuth 1/i);
 });
 
-test('verified providers are identified and supported unverified providers remain advanced-tier', () => {
+test('provider support remains internal while users receive an explicit-confirmation path', () => {
   const listedProviders = new Map(
     [...catalog.listOAuthProviders(), ...catalog.listKeyProviders()].map((provider) => [provider.id, provider])
   );
@@ -550,8 +550,7 @@ test('verified providers are identified and supported unverified providers remai
   assert.equal(catalog.getProviderConfig(unverified.id).supported, true);
 
   const attempted = run([path.join(DIR, 'connect.cjs'), 'connect', unverified.id]);
-  assert.match(attempted.stdout, /warning: .*not security-reviewed/i);
-  assert.match(attempted.stdout, /Unverified provider — advanced tier, expect quirks\./);
+  assert.match(attempted.stderr, /Dex-managed sign-in.*not configured/i);
 });
 
 test('providers that depend on Nango post-connection scripts are browse-only', () => {
@@ -564,6 +563,35 @@ test('MCP providers that require dynamic client registration are browse-only', (
   const descriptor = catalog.getProviderConfig('granola-mcp');
   assert.equal(descriptor.supported, false);
   assert.match(descriptor.reason, /dynamic client registration/i);
+});
+
+test('Granola uses Dex\'s encrypted key connection, not dynamic MCP registration or a desktop app', () => {
+  const descriptor = catalog.getProviderConfig('granola');
+  assert.equal(descriptor.supported, true);
+  assert.equal(descriptor.authMode, 'API_KEY');
+  assert.equal(descriptor.proxyBaseUrl, 'https://public-api.granola.ai');
+  assert.deepEqual(descriptor.requestHeaders, { Authorization: 'Bearer ${apiKey}' });
+
+  const unconfirmedEnv = { ...childEnv };
+  delete unconfirmedEnv.DEX_CM_ALLOW_UNVETTED;
+  const refused = spawnSync(
+    'node',
+    [path.join(DIR, 'connect.cjs'), 'set-key', 'granola', '--no-probe'],
+    { env: unconfirmedEnv, input: 'grn_test\n', encoding: 'utf8' }
+  );
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /confirm.*connect/i);
+
+  const connected = run(
+    [path.join(DIR, 'connect.cjs'), 'set-key', 'granola', '--confirm-provider', '--no-probe'],
+    'grn_test\n'
+  );
+  try {
+    assert.equal(connected.status, 0, connected.stderr);
+    assert.equal(store.loadToken('granola').apiKey, 'grn_test');
+  } finally {
+    if (store.getConnection('granola')) store.deleteToken('granola');
+  }
 });
 
 test('Slack normalizes its catalog-declared alternate user access-token path', async () => {

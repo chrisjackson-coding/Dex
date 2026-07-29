@@ -35,7 +35,9 @@ const DEFAULTS_TRUST_ERROR = Symbol('defaultsTrustError');
 function credentialsDir() {
   const vault = process.env.DEX_VAULT || process.env.VAULT_PATH;
   if (!vault) {
-    throw new Error('Set DEX_VAULT to your vault folder before using connections');
+    throw new Error(
+      'Dex needs to know which workspace should own this connection. Run this from your Dex workspace, or set DEX_VAULT to that workspace path.'
+    );
   }
   return path.join(vault, 'System', 'credentials');
 }

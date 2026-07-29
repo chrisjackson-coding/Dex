@@ -197,7 +197,7 @@ test('credential-bearing request builders refuse catalog drift away from vetted 
   }
 });
 
-test('unvetted connect use needs explicit consent and never auto-probes', async () => {
+test('provider connection needs explicit confirmation and never auto-probes', async () => {
   const provider = 'airtable-pat';
   const refused = spawnSync(
     process.execPath,
@@ -205,16 +205,16 @@ test('unvetted connect use needs explicit consent and never auto-probes', async 
     { env: childEnv, input: 'UNVETTED-SECRET\n', encoding: 'utf8' }
   );
   assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /not security-reviewed/i);
+  assert.match(refused.stderr, /confirm.*connect/i);
 
   const allowed = spawnSync(
     process.execPath,
-    [path.join(DIR, 'connect.cjs'), 'set-key', provider, '--allow-unvetted', '--no-probe'],
+    [path.join(DIR, 'connect.cjs'), 'set-key', provider, '--confirm-provider', '--no-probe'],
     { env: childEnv, input: 'UNVETTED-SECRET\n', encoding: 'utf8' }
   );
   try {
     assert.equal(allowed.status, 0, allowed.stderr);
-    assert.match(allowed.stdout, /warning.*not security-reviewed/i);
+    assert.match(allowed.stdout, /explicit confirmation/i);
   } finally {
     if (store.getConnection(provider)) store.deleteToken(provider);
   }
@@ -238,7 +238,7 @@ test('unvetted connect use needs explicit consent and never auto-probes', async 
   }
 });
 
-test('unvetted dex-call refuses by default and warns after explicit consent', () => {
+test('provider calls refuse by default and proceed after explicit confirmation', () => {
   const connId = 'airtable-pat:call-consent';
   const preload = path.join(TMP_VAULT, 'offline-fetch.cjs');
   fs.writeFileSync(
@@ -253,15 +253,15 @@ test('unvetted dex-call refuses by default and warns after explicit consent', ()
       { env: childEnv, encoding: 'utf8' }
     );
     assert.equal(refused.status, 1);
-    assert.match(refused.stderr, /not security-reviewed/i);
+    assert.match(refused.stderr, /confirm.*credentials/i);
 
     const allowed = spawnSync(
       process.execPath,
-      ['--require', preload, path.join(DIR, 'dex-call.cjs'), connId, '/v0/meta', '--allow-unvetted'],
+      ['--require', preload, path.join(DIR, 'dex-call.cjs'), connId, '/v0/meta', '--confirm-provider'],
       { env: childEnv, encoding: 'utf8' }
     );
     assert.equal(allowed.status, 0, allowed.stderr);
-    assert.match(allowed.stderr, /warning.*not security-reviewed/i);
+    assert.match(allowed.stderr, /explicit confirmation/i);
   } finally {
     store.deleteToken(connId);
   }

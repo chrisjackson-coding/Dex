@@ -51,7 +51,7 @@ async function main() {
           : error.category === 'needs_reauth'
             ? `${service} needs re-authentication. Run: node connect.cjs connect ${service}`
             : error.category === 'presence_required'
-              ? `${service} requires verified user presence, which only the Dex desktop app can provide — it cannot be completed from the command line.`
+              ? `${service} requires user confirmation before Dex can reveal a raw credential.`
             : 'Credential broker request failed.')
     );
     process.exit(exitCodeForError(error.category));

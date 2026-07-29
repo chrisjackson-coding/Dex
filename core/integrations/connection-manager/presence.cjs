@@ -13,17 +13,18 @@ let injectedProvider = null;
 /**
  * B1 user-presence policy.
  *
- * `connect` is the synthetic operation used by connect.cjs for the first
- * credential save. Rendered credentials and default token access deliberately
+ * Saving a connection is an explicit, foreground terminal/browser action, so
+ * it does not require a Dex desktop application.  Privileged secret export
+ * still does. Rendered credentials and default token access deliberately
  * remain silent so background sync keeps working.
  */
 function requiresPresence(op) {
-  return op === 'access-token' || op === 'full' || op === 'connect';
+  return op === 'access-token' || op === 'full';
 }
 
 function presenceRequiredError() {
   const error = new Error(
-    'User presence is required for this operation, which only the Dex desktop app can provide — it cannot be completed from the command line.'
+    'User confirmation is required before Dex can reveal a raw credential. Use the normal connection command to connect or replace an account.'
   );
   error.code = 'DEX_CM_PRESENCE_REQUIRED';
   error.category = 'presence_required';

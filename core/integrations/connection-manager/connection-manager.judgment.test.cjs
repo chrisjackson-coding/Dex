@@ -570,7 +570,7 @@ test('set-key says when a stored credential is not yet verified', () => {
     assert.equal(run.status, 0, run.stderr);
     assert.match(
       run.stdout,
-      new RegExp(`not yet verified — run: node connect\\.cjs probe ${connId}`)
+      new RegExp(`not yet checked live — run: node connect\\.cjs probe ${connId}`)
     );
   } finally {
     store.deleteToken(connId);

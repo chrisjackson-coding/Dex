@@ -1,13 +1,13 @@
 ---
 name: connect
-description: Connect, check and manage your app integrations — Google and Linear are reviewed and ready; hundreds more (Slack, Notion, GitHub and others) connect with an extra confirmation. OAuth or paste-a-key, tokens stored encrypted on your machine.
+description: Connect, check and manage your app integrations. Uses already-approved Claude connectors where available; Dex-managed sign-in is offered only when an approved client is configured. Tokens are encrypted on your machine.
 ---
 
 # Connect
 
 Connect Dex to the apps you use, see what's working, and fix anything that's broken — all from one conversational command. Dex owns the OAuth runtime and stores every token **encrypted on your machine, never sent to a relay**.
 
-Your sign-ins are **encrypted and kept on your machine** — never sent to our servers. Like other command-line tools that store logins, they are **not protected from other software running on your Mac as you**: a program running under your account could read them. That's the normal trade-off for a command-line tool, not a Dex-specific weakness. The **Dex desktop app closes this gap** when it ships — it adds a fingerprint check, and only the app can unlock the keys. Be honest about this if a user asks how safe their sign-ins are; never imply the command-line version can stop software already running as them, and never call it "secure", "safe", or "protected from malware".
+Your sign-ins are **encrypted and kept on your machine** — never sent to our servers. Like other command-line tools that store logins, they are **not protected from other software running on your Mac as you**: a program running under your account could read them. Be honest about this if a user asks how safe their sign-ins are; never imply the command-line version can stop software already running as them, and never call it "secure", "safe", or "protected from malware".
 
 This skill is a friendly driver over the connection manager CLI. You run the CLI verbs; you translate the output into plain language and clear next actions.
 
@@ -17,7 +17,7 @@ This skill is a friendly driver over the connection manager CLI. You run the CLI
 
 - **See what's connected** — a health sweep of all your connections, with each one mapped to a next action (reconnect, refresh, or nothing needed)
 - **Connect a new app** — two paths:
-  - **OAuth (Class A, 279 apps)** — before browser sign-in, the user must register their own app in the provider's developer console unless they already have one saved. Dex then guides browser consent, remembers the login locally, and auto-refreshes the token.
+  - **OAuth (Class A)** — Dex opens an approved sign-in flow when the installation has a Dex-managed OAuth client. If it does not, Dex says so plainly; users are never asked to create an app or supply client credentials.
   - **Paste a key (Class B, 348 apps)** — Linear, GitHub PATs, and other API-key services. No OAuth app or consent screen — paste the secret.
 - **Reconnect** — when a token is revoked or expires beyond refresh, re-run the OAuth flow
 - **Disconnect** — remove a connection and delete its local token
@@ -136,7 +136,7 @@ node core/integrations/connection-manager/connect.cjs providers --keys <filter>
 
 Show the matches and confirm which one they mean. Each row shows the provider `id`, display name, and auth mode. The `id` is what you pass to `connect` / `set-key`.
 
-Google and Linear have passed Dex's security review — that's the whole reviewed list. Everything else — including common picks like Slack, Notion, and GitHub — is marked `advanced` and the CLI requires the user's explicit opt-in with `--allow-unvetted`. This is normal, not a warning sign: it just means Dex hasn't hand-verified that provider's sign-in yet. Explain it plainly before using the flag. Browse-only providers cannot be connected yet.
+Some provider connections need a one-time explicit confirmation before Dex accepts a credential. Say what will be connected and what access it will use, then run the command with `--confirm-provider`. This is a consent step, not a public ranking of providers. Browse-only providers cannot be connected yet.
 
 If the match is unambiguous (one obvious hit), just confirm it inline rather than making them pick.
 
@@ -147,34 +147,9 @@ If the match is unambiguous (one obvious hit), just confirm it inline rather tha
 
 ### Step 4: Connect — Class A (OAuth)
 
-OAuth services need an OAuth app (a client id + secret) to drive the flow. Check whether one already exists before asking the user to register anything.
+OAuth needs an approved Dex-managed client. Check whether the app is already available through a Claude connector first. If there is no Claude connector and Dex reports that sign-in is not configured, stop there: users must not create an app, handle client credentials, extract browser cookies, or configure callback ports. An administrator/operator must enable the approved Dex-managed client.
 
-**Google: Calendar is the simpler first scope; Gmail is more involved.** Dex does not ship a pre-registered Google OAuth app, so the user needs to register their own Google client unless they already saved one or supplied it through the environment. Calendar usually has a lighter setup and reading someone's day/week is a useful first connection. Gmail is a "restricted" scope in Google's eyes and carries extra verification steps, so treat it as a deliberate, later step rather than part of a quick first connect.
-
-**4a. Check for an existing OAuth app.**
-OAuth app credentials live in `{DEX_VAULT}/System/credentials/oauth-apps.json`, keyed by service. Dex does not bundle provider client credentials. If the user has already registered an app there, or supplied `DEX_OAUTH_<SERVICE>_CLIENT_ID` and `_CLIENT_SECRET`, you can connect straight away — skip to 4c.
-
-**4b. Register an OAuth app (only if none exists) — YOU write the file, the user never edits it.**
-
-The user must **never open or edit a config file**. You capture the two values in chat and save them for them with `register-app`:
-
-1. Walk them through creating an OAuth client in the provider's developer console (pick "Desktop app" / "Installed" where offered). If they're stuck, point them at the provider's "OAuth app" / "API credentials" page — that's the most technical they ever get.
-2. If the provider asks for redirect URIs, register the loopback callbacks the engine may choose: `http://127.0.0.1:3847/callback` through `http://127.0.0.1:3855/callback`, plus `http://127.0.0.1:3860/callback`. The engine uses the first free port. The authorization URL printed when connecting shows the exact `redirect_uri` chosen. A provider that requires `localhost` instead of `127.0.0.1` can use `DEX_OAUTH_CALLBACK_HOST=localhost`; register the matching `localhost` callbacks.
-3. Ask them to **paste the client id, then the client secret** into the chat (the secret may be blank for public/PKCE clients).
-4. **You** save them — read the two values from stdin so they never land in shell history:
-
-   ```bash
-   node core/integrations/connection-manager/connect.cjs register-app <service> <<'CREDS'
-   <client-id>
-   <client-secret>
-   CREDS
-   ```
-
-   (Headless/dev alternative: `DEX_OAUTH_<SERVICE>_CLIENT_ID` / `_CLIENT_SECRET` env vars.)
-
-If the user already has a usable OAuth app for that provider, capture its id/secret the same way. Then continue to 4c. **Never tell the user to edit `oauth-apps.json` by hand.**
-
-**4c. Run the OAuth flow.**
+**Run the OAuth flow only after that client is configured.**
 Pick the scopes the user needs (least-privilege; for read-only context, prefer the `…readonly` scopes), then:
 
 ```bash
@@ -190,7 +165,7 @@ This opens the browser to the provider's consent screen and waits on the local l
 **If it fails:**
 - Browser didn't open → copy the URL printed in the output and open it manually.
 - Consent not granted / wrong scopes → re-run with the right scopes.
-- Callback rejected → read the `redirect_uri` in the printed authorization URL, then make sure that exact host, port, and `/callback` path is registered with the provider (4b, step 2).
+- Callback rejected → the temporary browser callback is an implementation detail. Tell the user the sign-in did not finish and offer to retry once the Dex-managed connection is enabled; do not expose ports or ask them to configure one.
 - No refresh token came back → confirm the auth URL requests offline access:
   ```bash
   node core/integrations/connection-manager/connect.cjs authurl <service> --scopes …
@@ -229,7 +204,7 @@ Have the user paste their key when prompted (it's read from stdin). For BASIC se
 
 **If a required field is missing, `set-key` refuses and names it** (e.g. *"ActiveCampaign needs connection detail: hostname"*) rather than saving a dead connection — so always `describe` first, or just read the error and re-run with the field.
 
-On success the key is encrypted and stored exactly like an OAuth token. For security-reviewed providers, Dex runs a **live check** where it can: a reviewed verification endpoint can confirm the key or flag a rejected credential, while a generic check can only confirm and never condemn. Advanced providers are not auto-checked. Confirm with `connect.cjs status` — key connections show as `connected` or `connected (unverified)`; read "(unverified)" to the user as "not checked live yet", never as a safety statement (they don't expire or need refresh).
+On success the key is encrypted and stored exactly like an OAuth token. Dex performs a bounded live check only where the connection has an approved verification endpoint; otherwise it reports "not checked live". This is an availability fact, not a safety statement.
 
 **Note on how consumers use it:** for an API-key service, the token accessor returns the rendered request recipe so callers don't re-implement the auth scheme:
 
@@ -281,7 +256,6 @@ All under `core/integrations/connection-manager/`:
 |---------|--------------|
 | `connect.cjs status` | Health sweep of all connections |
 | `connect.cjs connect <svc> --scopes a,b,c [--as <alias>] [--default]` | Run the OAuth flow (Class A); `--as` connects a second account |
-| `connect.cjs register-app <svc>` | Save an OAuth app's client id/secret (reads stdin: id then secret) — so the user never edits a file |
 | `connect.cjs describe <svc>` | Show what a provider needs: secret, required fields, base URL, docs (run before `set-key`) |
 | `connect.cjs set-key <svc> [--<field> v] [--as <alias>] [--default]` | Store a pasted API key (Class B; reads stdin). Host-scoping fields as `--subdomain`, etc.; `--as` for a 2nd account |
 | `connect.cjs disconnect <svc>` | Delete a connection's local token (`<svc>` may be `provider` or `provider:alias`) |
@@ -298,9 +272,9 @@ All under `core/integrations/connection-manager/`:
 
 ## Troubleshooting
 
-### "'<service>' has no OAuth app registered yet"
+### "Dex-managed sign-in is not configured"
 
-The provider needs a client id + secret that isn't saved yet. Do **not** tell the user to edit a file — follow Step 4b: capture the client id + secret in chat and run `register-app <service>` to save them for them.
+This installation does not yet have an approved OAuth client for the provider. Tell the user they do not need to create an app, paste a secret, or deal with ports. Use an existing Claude connector where available, or ask the Dex/workspace administrator to enable the connection.
 
 ### A connection flipped to `needs_reauth`
 
