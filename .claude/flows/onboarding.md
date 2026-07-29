@@ -43,21 +43,56 @@ name, relationship, or outcome when the transcription is ambiguous.
 
 ## Calendar First (Before Step 1)
 
-Say: "Welcome to Dex. Before I ask you anything, let's connect your calendar — at the end of setup I'll show you your actual week, organised. It takes a few seconds, and you can skip it."
+Say: "Welcome to Dex. Before I ask you anything, let's choose the calendar source
+you want me to use. At the end of setup I'll show you the week from that source. You
+can skip this for now."
 
 This opening is separate from the eight validated profile steps. It must stay non-blocking.
 
-Detect the host platform first. Run `uname -s` when available; if that command is unavailable, use the runtime-reported operating system.
+First check whether **Google Calendar is already connected and its read-only calendar
+reader is available**. Do not infer this from a macOS Calendar.app account. If it is
+available, offer it first:
 
-**On non-macOS platforms (anything other than `Darwin`):**
+```
+Which calendar should I use?
+1. Google Calendar — [connected account]
+2. Apple Calendar on this Mac
+3. Skip for now
+```
+
+For Google, list calendars through the Google reader and call:
+
+```text
+save_calendar_selection(
+  provider="google",
+  work_calendar="[exact Google calendar identifier]",
+  work_email="[connected Google address when available]",
+  calendar_count=[returned count]
+)
+```
+
+If Google is connected but its reader is not installed, say so plainly: "Google is
+connected, but this Dex installation cannot read it yet. I won't fall back to the Mac
+calendar without your say-so." Offer Apple Calendar or skip. Do not claim a Google
+scan succeeded in that state.
+
+Detect the host platform only when the user selects Apple Calendar. Run `uname -s`
+when available; if that command is unavailable, use the runtime-reported operating
+system.
+
+**On non-macOS platforms (anything other than `Darwin`) after Apple is selected:**
 
 Say: "Calendar sync is currently available only on macOS, so I'll skip calendar setup on this computer."
 
-Call `save_calendar_selection(skipped=true)`, then continue to Step 1. Do not call `calendar_list_calendars`, show macOS settings guidance, or block onboarding.
+Call `save_calendar_selection(skipped=true, provider="apple")`, then continue to Step
+1. Do not call `calendar_list_calendars`, show macOS settings guidance, or block
+onboarding.
 
 **On macOS:**
 
-Call `calendar_list_calendars` from the Calendar MCP to get the calendar names Calendar.app can see.
+Call `calendar_list_calendars` from the Calendar MCP to get the calendar names
+Apple Calendar can see. This is an explicit Apple choice, never a fallback from
+Google.
 
 **If the listing succeeds:**
 
@@ -78,6 +113,7 @@ The user can reply with a number or type the calendar name. Resolve a number to 
 Example:
 ```
 save_calendar_selection(
+  provider="apple",
   work_calendar="jane@example.com",
   work_email="jane@example.com",
   calendar_count=4
@@ -104,7 +140,7 @@ Say: "macOS hasn't let this terminal app read your calendars yet — open **Syst
 
 Offer two choices:
 1. Try again after granting access — call `calendar_list_calendars` again
-2. Skip for now — call `save_calendar_selection(skipped=true)`
+2. Skip for now — call `save_calendar_selection(skipped=true, provider="apple")`
 
 Do not block onboarding when they skip. `/dex-doctor` will confirm the calendar setup later. Continue to Step 1.
 
@@ -127,7 +163,11 @@ Do not ask eligibility questions. Route only what Dex can honestly read:
 - **Teams:** use `/ms-teams-setup`, then Dex's Teams reader for the meeting context it exposes.
 - **Any other meeting-notes tool:** do not imply Dex has a direct reader. Offer: "Point me at a folder of exported notes and I'll import the `.md`, `.txt`, `.vtt`, and `.srt` files." Run `python -m core.ritual_intelligence import-transcript-folder "<folder>"`.
 
-After a selected reader is connected, start its initial sync as a background task and continue to Step 1 without waiting for the backfill. For a folder, start the import the same way. Say plainly: "I'll keep that running in the background while we finish setting up."
+After a selected reader is connected, offer a bounded 7/14/30-day initial fetch (14
+days recommended). The scheduled sync may fetch and queue notes, but it must not run
+an LLM or write meeting-derived tasks, pages, or notes unattended. Continue to Step 1
+without waiting for a queued fetch. For an imported folder, use the same review-first
+rule.
 
 If nothing relevant is detected, offer the exported-notes folder once. If the user says skip, later, or no, continue immediately. This offer has no validation step and must never block onboarding.
 
