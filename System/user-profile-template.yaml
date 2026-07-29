@@ -67,6 +67,16 @@ communication:
   # Coaching style preference (for career coaching)
   coaching_style: "collaborative"  # options: encouraging, collaborative, challenging
 
+# Optional, user-reviewed context from onboarding. Dex stores only the summary you
+# confirm; it never copies the contents of a resume, review, or other uploaded file.
+working_context:
+  role_focus: ""
+  current_work: ""
+  week_success: ""
+  quarter_outcome: ""
+  anything_else: ""
+  key_people: []
+
 # Strategic Pillars
 # Defined during onboarding, sync'd with System/pillars.yaml
 pillars: []

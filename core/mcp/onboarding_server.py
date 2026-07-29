@@ -148,6 +148,8 @@ COMPANY_SIZES = ["startup", "scaling", "enterprise", "large_enterprise"]
 FORMALITY_LEVELS = ["formal", "professional_casual", "casual"]
 DIRECTNESS_LEVELS = ["very_direct", "balanced", "supportive"]
 CAREER_LEVELS = ["junior", "mid", "senior", "leadership", "c_suite"]
+MAX_WORKING_CONTEXT_CHARACTERS = 1200
+MAX_WORKING_CONTEXT_PEOPLE = 5
 ROLE_EMAIL_LOCALS = {
     "accounts",
     "admin",
@@ -282,6 +284,84 @@ def default_working_week_suggestion() -> Dict[str, Any]:
         # out, not that it looked and found too little.
         "reason": "Dex hasn't worked this out from your calendar.",
     }
+
+
+def _context_text(value: Any, field: str) -> str:
+    """Normalize a short, user-reviewed piece of onboarding context."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"working_context.{field} must be text")
+    cleaned = value.strip()
+    if len(cleaned) > MAX_WORKING_CONTEXT_CHARACTERS:
+        raise ValueError(
+            f"working_context.{field} is too long; keep it under "
+            f"{MAX_WORKING_CONTEXT_CHARACTERS} characters"
+        )
+    return cleaned
+
+
+def normalize_working_context(value: Any) -> Dict[str, Any]:
+    """Keep only reviewed, useful context; never retain uploaded document text."""
+    if not isinstance(value, dict):
+        raise ValueError("working_context must be an object")
+
+    allowed = {
+        "role_focus",
+        "current_work",
+        "week_success",
+        "quarter_outcome",
+        "anything_else",
+        "key_people",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(
+            "working_context contains unsupported fields: " + ", ".join(unknown)
+        )
+
+    context = {
+        field: _context_text(value.get(field), field)
+        for field in allowed - {"key_people"}
+    }
+    people = value.get("key_people", [])
+    if not isinstance(people, list) or len(people) > MAX_WORKING_CONTEXT_PEOPLE:
+        raise ValueError(
+            f"working_context.key_people must contain at most "
+            f"{MAX_WORKING_CONTEXT_PEOPLE} people"
+        )
+    normalized_people = []
+    for index, person in enumerate(people):
+        if not isinstance(person, dict):
+            raise ValueError(f"working_context.key_people[{index}] must be an object")
+        unknown_person_fields = sorted(
+            set(person) - {"name", "relationship", "how_to_help"}
+        )
+        if unknown_person_fields:
+            raise ValueError(
+                f"working_context.key_people[{index}] contains unsupported fields: "
+                + ", ".join(unknown_person_fields)
+            )
+        name = _context_text(person.get("name"), f"key_people[{index}].name")
+        if not name:
+            raise ValueError(f"working_context.key_people[{index}].name is required")
+        normalized_people.append(
+            {
+                "name": name,
+                "relationship": _context_text(
+                    person.get("relationship"),
+                    f"key_people[{index}].relationship",
+                ),
+                "how_to_help": _context_text(
+                    person.get("how_to_help"),
+                    f"key_people[{index}].how_to_help",
+                ),
+            }
+        )
+    context["key_people"] = normalized_people
+    if not any(context.values()):
+        raise ValueError("working_context needs at least one piece of context")
+    return context
 
 
 def validate_email_domain(domain: str) -> tuple[bool, Optional[str], str]:
@@ -1602,6 +1682,30 @@ async def handle_list_tools() -> list[types.Tool]:
             }
         ),
         types.Tool(
+            name="save_working_context",
+            description=(
+                "Save a reviewed, optional working-context brief for Dex. "
+                "Never pass document text; only save the user's confirmed summary."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "working_context": {
+                        "type": "object",
+                        "description": (
+                            "Confirmed summary: role_focus, current_work, week_success, "
+                            "quarter_outcome, anything_else, and up to five key_people."
+                        ),
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "True only after the user has reviewed this summary",
+                    },
+                },
+                "required": ["working_context", "confirmed"],
+            },
+        ),
+        types.Tool(
             name="get_onboarding_status",
             description="Get current onboarding progress and completion status",
             inputSchema={
@@ -2049,6 +2153,36 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
             
             return [types.TextContent(type="text", text=json.dumps(result, indent=2, cls=DateTimeEncoder))]
 
+        elif name == "save_working_context":
+            session = load_session()
+            if not session:
+                result = create_error_response(
+                    "No active session",
+                    suggestion="Call start_onboarding_session first",
+                )
+            elif arguments.get("confirmed") is not True:
+                result = create_error_response(
+                    "Working context must be reviewed before it is saved",
+                    field="confirmed",
+                    suggestion="Show the summary, then call again with confirmed=true",
+                )
+            else:
+                try:
+                    context = normalize_working_context(arguments.get("working_context"))
+                except ValueError as error:
+                    result = create_error_response(
+                        str(error),
+                        field="working_context",
+                    )
+                else:
+                    session["data"]["working_context"] = context
+                    save_session(session)
+                    result = create_success_response(
+                        {"working_context": context},
+                        "Working context saved after review.",
+                    )
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
         elif name == "save_calendar_selection":
             skipped = arguments.get('skipped', False)
             work_calendar = (arguments.get('work_calendar') or '').strip()
@@ -2346,6 +2480,8 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
                         for room in capability_rooms.room_ids()
                     },
                 }
+                if 'working_context' in data:
+                    profile_preview['working_context'] = data['working_context']
                 if 'calendar' in data:
                     profile_preview['work_email'] = data.get('work_email', '')
                     profile_preview['calendar'] = data['calendar']

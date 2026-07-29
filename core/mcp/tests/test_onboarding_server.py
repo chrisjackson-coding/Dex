@@ -42,6 +42,75 @@ VALID_STEP_DATA = {
 }
 
 
+class TestWorkingContext:
+    def test_save_working_context_requires_a_reviewed_summary(self, tmp_path, monkeypatch):
+        session_file = tmp_path / "System/.onboarding-session.json"
+        monkeypatch.setattr(onboarding_server, "SESSION_FILE", session_file)
+        onboarding_server.save_session(onboarding_server.create_new_session())
+
+        payload = _call_tool(
+            "save_working_context",
+            {
+                "working_context": {"current_work": "Ship the onboarding refresh"},
+                "confirmed": False,
+            },
+        )
+
+        assert payload["success"] is False
+        assert payload["field"] == "confirmed"
+        assert "reviewed" in payload["error"]
+
+    def test_save_working_context_persists_only_confirmed_structured_summary(
+        self, tmp_path, monkeypatch
+    ):
+        session_file = tmp_path / "System/.onboarding-session.json"
+        monkeypatch.setattr(onboarding_server, "SESSION_FILE", session_file)
+        onboarding_server.save_session(onboarding_server.create_new_session())
+
+        payload = _call_tool(
+            "save_working_context",
+            {
+                "working_context": {
+                    "role_focus": "Lead product strategy",
+                    "current_work": "Make onboarding smoother",
+                    "week_success": "A reviewed prototype",
+                    "quarter_outcome": "A trusted launch",
+                    "key_people": [{
+                        "name": "Morgan",
+                        "relationship": "Design partner",
+                        "how_to_help": "Flag preparation before calls",
+                    }],
+                },
+                "confirmed": True,
+            },
+        )
+
+        assert payload["success"] is True, payload
+        saved = onboarding_server.load_session()["data"]["working_context"]
+        assert saved["current_work"] == "Make onboarding smoother"
+        assert saved["key_people"] == [{
+            "name": "Morgan",
+            "relationship": "Design partner",
+            "how_to_help": "Flag preparation before calls",
+        }]
+
+    def test_working_context_rejects_unreviewed_document_content_fields(self, tmp_path, monkeypatch):
+        session_file = tmp_path / "System/.onboarding-session.json"
+        monkeypatch.setattr(onboarding_server, "SESSION_FILE", session_file)
+        onboarding_server.save_session(onboarding_server.create_new_session())
+
+        payload = _call_tool(
+            "save_working_context",
+            {
+                "working_context": {"resume_text": "private document contents"},
+                "confirmed": True,
+            },
+        )
+
+        assert payload["success"] is False
+        assert "unsupported fields" in payload["error"]
+
+
 def _start_session_before_step(step_number: int) -> None:
     onboarding_server.save_session(onboarding_server.create_new_session())
     skipped = _call_tool("save_calendar_selection", {"skipped": True})
@@ -1116,14 +1185,8 @@ class TestCapabilityStep:
             "quarter_goals": {"enabled": True},
         }
 
-    def test_onboarding_step_8_asks_nothing_now_that_every_room_is_on(self):
-        """All three rooms default on, so step 8 has no question left to ask.
-
-        It states what the user is getting and moves on. The step must not put a
-        yes/no choice to someone whose answer is always yes, and must not force
-        an answer — an unanswered step 8 is what lets finalization fill every
-        room from the shipped defaults.
-        """
+    def test_onboarding_step_8_does_not_turn_capabilities_into_a_receipt(self):
+        """Default capabilities stay out of the completion story unless requested."""
         flow = (REPO_ROOT / ".claude/flows/onboarding.md").read_text(encoding="utf-8")
         step = flow.split("## Step 8:", 1)[1].split("## Step 9:", 1)[0]
 
@@ -1131,8 +1194,8 @@ class TestCapabilityStep:
         assert "Recommended" not in step
         assert "**Do not ask a question here.**" in step
         assert "Do not call `validate_and_save_step` for step 8." in step
-        for room in ("Companies", "Career", "Quarter Goals"):
-            assert room in step
+        assert "learn a taxonomy of rooms" in step
+        assert "Career** for growth" not in step
 
     def test_finalize_with_default_answers_provisions_protected_room_seeds(
         self, tmp_path, monkeypatch

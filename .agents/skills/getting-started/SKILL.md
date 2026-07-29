@@ -43,7 +43,8 @@ else:
 
 **If `run_dramatic_reveal` is True:**
 
-Say: "Hold on... analyzing your calendar and meetings. 🔍"
+Say: "I can check the sources you connected. I’ll read the selected range and show
+you a draft first; I won’t create plans, pages, or tasks without your approval."
 
 **Execute analysis:**
 1. Call calendar MCP: `calendar_get_events` for the next 7 days 
@@ -67,14 +68,13 @@ Say: "Hold on... analyzing your calendar and meetings. 🔍"
 • [M] unique people
 • [K] external companies
 
-**I went ahead and created:**
-✅ Your weekly plan with time blocks around these meetings
-✅ Person pages for [Person1], [Person2], [Person3]
-✅ Identified [K] external organizations to track
+**Here is a draft of what Dex sees:**
+• Possible weekly priorities, based on the calendar evidence
+• People whose context may be useful to prepare before a meeting
+• Organisations worth reviewing, where the evidence is sufficient
 
-Want to see? [Show excerpt from 02-Week_Priorities/Week_Priorities.md]
-
-**This is what Dex does** - turns your calendar chaos into structure automatically.
+Nothing has been written yet. I’ll show the evidence and ask before creating a plan,
+page, task, or relationship.
 
 Now, want me to:
 1. Process those [N] Granola meetings (extract action items)?
@@ -124,7 +124,7 @@ else:
 
 ### If pre_analysis_deferred is True (first time running /getting-started):
 
-**Run the full analysis NOW and do the dramatic reveal:**
+**Run the selected, read-only analysis and show a useful first brief:**
 
 ```
 👋 **Welcome, [Name]!**
@@ -138,8 +138,8 @@ Hold on - let me analyze what you have available...
 2. Analyze Granola meetings from last 7 days
 3. Identify top 3 frequent contacts
 4. Count unique people and external companies
-5. Create weekly plan with real data
-6. Create person pages for top contacts
+5. Draft a weekly plan from the evidence
+6. Stage any person-page suggestions for review
 ```
 
 **Then present the dramatic reveal:**
@@ -159,14 +159,12 @@ I just analyzed your data:
 • **[M] unique people** 
 • **[K] external companies**
 
-**I went ahead and:**
-✅ Created your weekly plan with time blocks based on these meetings
-✅ Made person pages for [Person1], [Person2], [Person3]
-✅ Identified [K] external organizations
+**Here are the reviewed next steps I can help with:**
+• A draft weekly plan based on these meetings
+• Candidate person pages for [Person1], [Person2], [Person3]
+• Candidate organisations, where the evidence is sufficient
 
-Want to see what I built? [Show excerpt from weekly plan]
-
-**This is what Dex does - it works while you're not looking.**
+Nothing has been created yet. Choose what you want to keep.
 
 Now, want me to process those [N] Granola meetings to extract action items and context?
 ```
@@ -285,24 +283,19 @@ Here's what I can create from your Granola history:
 
 **What would you like me to do?**
 
-1️⃣ Smart default (Recommended)
-   • People/companies: All [days_back] days
-   • Meeting notes: Last 30 days (~[est_30d] meetings)
-   • Todos: Last 7 days (~[est_7d] meetings)
+1️⃣ Two weeks (Recommended)
+   • A useful starting point without a long wait
 
-2️⃣ Recent only (Conservative)
-   • Everything: Last 7 days only
+2️⃣ Seven days
+   • The quickest small batch
 
-3️⃣ Full history (Comprehensive)
-   • Everything: All [days_back] days
+3️⃣ Thirty days
+   • More history; this can take longer
 
-4️⃣ Custom (You choose)
-   • Pick different time ranges for each type
-
-5️⃣ Just going forward
+4️⃣ Just going forward
    • Start fresh from today
 
-6️⃣ Skip for now
+5️⃣ Skip for now
 ```
 
 ### User Chooses Processing Strategy
@@ -315,12 +308,11 @@ Use AskUserQuestion tool. If AskUserQuestion is not available, prompt in CLI wit
     "prompt": "How would you like to process your Granola data?",
     "allow_multiple": false,
     "options": [
-      {"id": "smart", "label": "1️⃣ Smart default - People/companies (all) + Notes (30d) + Todos (7d)"},
-      {"id": "recent", "label": "2️⃣ Recent only - Everything from last 7 days"},
-      {"id": "full", "label": "3️⃣ Full history - Everything from all available data"},
-      {"id": "custom", "label": "4️⃣ Custom - I'll choose time ranges for each type"},
-      {"id": "forward", "label": "5️⃣ Just going forward - Start fresh from today"},
-      {"id": "skip", "label": "6️⃣ Skip for now"}
+      {"id": "fourteen_days", "label": "1️⃣ Two weeks (recommended) — useful context without a long wait"},
+      {"id": "seven_days", "label": "2️⃣ Seven days — the quickest small batch"},
+      {"id": "thirty_days", "label": "3️⃣ Thirty days — more context and a longer wait"},
+      {"id": "forward", "label": "4️⃣ Just going forward"},
+      {"id": "skip", "label": "5️⃣ Skip for now"}
     ]
   }]
 }
@@ -544,7 +536,7 @@ I can create person pages for your frequent contacts if you'd like.
 **But I notice Granola isn't connected** - that's how I process meeting transcripts into action items and insights.
 
 Want help with:
-1. Connecting Granola — run `/granola-setup` to add your Granola API key (needs a Granola Business plan) for automatic meeting intelligence
+1. Connecting Granola — use `/granola-setup` to add a Granola API key, then choose a reviewed processing batch in an active session
 2. Connecting another meeting tool
 3. Or tell me what other tools you use - I'll build integrations
 

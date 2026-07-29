@@ -9,8 +9,8 @@ const contract = require('./provision-contract.json');
 const portableContract = require('../packages/dex-contracts/dist/portable-vault.contract.json');
 
 const PROFILE_KEYS = new Set([
-  'name', 'role', 'company', 'company_size', 'email_domain', 'work_email',
-  'obsidian_mode', 'pillars', 'working_week', 'communication', 'capabilities',
+  'name', 'role', 'company', 'company_size', 'email_domain', 'work_email', 'calendar',
+  'obsidian_mode', 'pillars', 'working_week', 'communication', 'capabilities', 'working_context',
 ]);
 
 const CAPABILITY_CATALOG = path.join(
@@ -157,6 +157,12 @@ function loadProfileOverlay(profilePath) {
   if (overlay.communication !== undefined && (
     !overlay.communication || typeof overlay.communication !== 'object' || Array.isArray(overlay.communication)
   )) throw new Error('Profile JSON communication must be an object');
+  if (overlay.calendar !== undefined && (
+    !overlay.calendar || typeof overlay.calendar !== 'object' || Array.isArray(overlay.calendar)
+  )) throw new Error('Profile JSON calendar must be an object');
+  if (overlay.working_context !== undefined && (
+    !overlay.working_context || typeof overlay.working_context !== 'object' || Array.isArray(overlay.working_context)
+  )) throw new Error('Profile JSON working_context must be an object');
   if (overlay.capabilities !== undefined) {
     if (!overlay.capabilities || typeof overlay.capabilities !== 'object' || Array.isArray(overlay.capabilities)) {
       throw new Error('Profile JSON capabilities must be an object');

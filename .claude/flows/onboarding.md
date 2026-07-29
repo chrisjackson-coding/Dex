@@ -22,6 +22,23 @@ Detect which question tool is available so all subsequent steps use the right on
 
 Remember this for the rest of onboarding. Every step that says "present options" should use whichever tool you detected here. The JSON schemas below work identically for both `AskQuestion` and `AskUserQuestion`.
 
+### Make the terminal feel easy (say this once)
+
+Before the first numbered choice, say:
+
+```
+Quick tip: when you see numbered choices, you can simply press `1`, `2`, or `3`.
+You never need to type the whole answer. If you'd rather talk, run `/voice`, then
+hold Space while you speak (or use `/voice tap`). Speak naturally — I'll ask if
+anything is unclear.
+```
+
+Voice dictation is optional. It transcribes audio through Anthropic, so it requires a
+Claude.ai account, microphone permission, and any organisation policy to allow it.
+Never claim that voice or an uploaded document stays only on the computer. Keep the
+typed path equally available and do not overpromise accuracy: confirm an important
+name, relationship, or outcome when the transcription is ambiguous.
+
 ---
 
 ## Calendar First (Before Step 1)
@@ -180,7 +197,19 @@ Call `validate_and_save_step(step_number=2, step_data={"role_number": [selected 
 
 ## Step 3: Company Size
 
-Ask: "What's your company name? (Optional — leave it blank if you don't have one.)"
+If a calendar-derived domain was confirmed, turn it into a helpful suggestion rather
+than asking the user to repeat information:
+
+```
+It looks like you work at Pendo from your calendar address. Is that right?
+1. Yes, Pendo
+2. No — I'll give you the company name
+3. I'd rather skip this
+```
+
+Use the actual candidate name only when it can be derived conservatively from the
+confirmed domain. On 2, ask for the name; on 3, leave it blank. If there is no
+confirmed domain, ask: "What's your company name? You can skip this."
 
 Then ask: "What's your company size?"
 
@@ -380,16 +409,74 @@ Then call `validate_and_save_step(step_number=7, step_data={"working_week": {"da
 
 ---
 
-## Step 8: Rooms
+## Optional context tour: help Dex understand your world
+
+This is one invitation, not a second confusing setup step. Say:
+
+```
+The more useful context you choose to share, the more useful Dex can be. Want to
+spend about two minutes giving me the shape of your work?
+1. Yes, let's do it
+2. Keep setup short
+```
+
+If they choose 1, start with three plain-language prompts. They may answer by voice
+or type; do not make them fill in a form:
+
+1. "What are you accountable for, and where would you most like help?"
+2. "What are you working on right now, and what tends to get in the way?"
+3. "What would make this week — and this quarter — feel meaningfully successful?"
+
+Then offer one small numbered branch, so they can add only what matters:
+
+```
+Anything else worth adding?
+1. Key people and the relationship I should keep in mind
+2. More detail on current work
+3. More detail on the quarter ahead
+4. All of these
+5. That's enough for now
+```
+
+For key people, ask for at most five names, the relationship, and how Dex should be
+helpful (for example, "my manager — flag preparation before our 1:1"). Never infer
+or save sensitive relationship information from calendar, email, or Slack without a
+specific user confirmation.
+
+Before saving, show a compact recap headed **"My first working brief"**. Ask them to
+confirm or correct it. Only after an explicit confirmation call:
+
+```text
+save_working_context(
+  working_context={
+    role_focus: "...", current_work: "...", week_success: "...",
+    quarter_outcome: "...", anything_else: "...",
+    key_people: [{name: "...", relationship: "...", how_to_help: "..."}]
+  },
+  confirmed=true
+)
+```
+
+Never pass document contents to this tool. If the user volunteers a resume, role
+description, annual review, or development plan, say: "You can share it locally for
+me to read and summarise. The original file stays on your computer; if I read it,
+its contents are sent to the active AI service, so use only material you are allowed
+to share." Ask before opening it, and store only the user-reviewed summary above.
+
+Do not offer personality, colour-profile, or Myers-Briggs questionnaires during first
+run. They are optional later context, not a reliable prerequisite for useful help.
+
+---
+
+## Step 8: Advanced capabilities
 
 **Do not ask a question here.** All three rooms are on for a new vault, so there is
 nothing to choose. Onboarding is already long; a question whose answer is always
 "yes" only makes it longer.
 
-Say: "Alongside meetings, people, and tasks, you're getting three more rooms:
-**Companies** for the organizations you deal with, **Career** for growth evidence
-and resumes, and **Quarter Goals** for 3-month planning. All three are set up and
-ready — you don't have to use them, and nothing appears in them until you do."
+Say: "Your everyday workspace is ready around your meetings, people, tasks, and the
+work you told me about. Extra capabilities are available when they become useful;
+you don't need to learn a taxonomy of rooms to get value from Dex."
 
 Then move straight to Step 9. **Do not call `validate_and_save_step` for step 8.**
 Finalization fills in every room it wasn't given an answer for, using the shipped
@@ -405,7 +492,7 @@ validate_and_save_step(
 )
 ```
 
-Only name the rooms they actually spoke about. Any room you leave out still follows
+Only name a capability if the user actually spoke about it. Any one you leave out still follows
 the default, and a recorded answer — on or off — is never overwritten later.
 
 Say: "You can change these later with `/manage-capabilities`. Turning a room off never deletes its notes; it only hides that room's skills and stops new room content from being created."
@@ -420,16 +507,9 @@ Say: "You can change these later with `/manage-capabilities`. Turning a room off
 3. Call `verify_dependencies()` to check Python packages and Calendar.app
 4. Show any missing dependencies with installation instructions (if any)
 
-Say: "Perfect! I'm creating your workspace now. Here's what you're getting:
-
-**Dex uses the PARA method:**
-- **04-Projects/** — Time-bound work with clear outcomes
-- **05-Areas/** — Ongoing responsibilities (People/ is always on; Career/ and Companies/ appear only if selected)
-- **06-Resources/** — Reference material (learnings, quarterly reviews, system docs)
-- **07-Archives/** — Historical records (plans, reviews, completed projects)
-- **00-Inbox/** — Capture zone (meetings, ideas, notes)
-
-This separates active work from reference material and keeps your capture zone lightweight."
+Say: "Perfect — I’m creating the foundation for your work now. You don't need to
+learn the folders. Start by talking to me about the people, projects, meetings, and
+priorities that matter; Dex keeps the structure behind the scenes."
 
 **Then execute finalization:**
 
@@ -441,18 +521,20 @@ Call `finalize_onboarding()` from onboarding-mcp. This single call handles:
 5. Write System/pillars.yaml from pillars
 6. Update CLAUDE.md User Profile section
 7. Setup root .mcp.json (replace {{VAULT_PATH}} automatically)
-8. Provision folders and skills only for the optional rooms selected in Step 8
+8. Make advanced capabilities available without making them the onboarding story
 9. Delete session file on success
 
 The MCP returns a summary of what was created (folders, files, configs).
 
-**After creation, say:** "✓ Workspace created! You now have a structure tailored for [their role]."
-
-Show the summary from the MCP response.
+**After creation, say:** "✓ Your workspace is ready. I have a first picture of your
+role, priorities, and the support you want from Dex." Do not show a receipt of
+folders, skills, or capability rooms.
 
 ### Automatic First-Week Reveal
 
-Immediately call `run_first_week_analysis()` from onboarding-mcp. This call is automatic; do not ask whether the user wants a tour first.
+If the user selected a calendar, call `run_first_week_analysis()` from onboarding-mcp
+for the already-authorised calendar only. Do not claim to have checked email, Slack,
+or any other source yet.
 
 Use only the structured fields returned by the tool:
 
@@ -465,7 +547,28 @@ Use only the structured fields returned by the tool:
   - `top_contacts`, only when the list is non-empty
   - Recent meeting and people/company counts, only when the corresponding values are non-zero
 
-Then show `draft_weekly_plan` as a suggested draft for the user's week. Do not claim that the draft was written to the vault; this tool analyzes and drafts.
+Then show `draft_weekly_plan` as a suggested draft for the user's week. Do not claim
+that the draft was written to the vault; this tool analyzes and drafts.
+
+### Optional cross-check: connected sources only
+
+After the calendar reveal, offer a bounded, read-only check against the sources that
+are actually connected — never a silent scan and never a flat promise that every
+source is available:
+
+```
+I can compare this first brief with the sources you have already connected. I would
+read only the last 30 days, looking for the people and work you mentioned; I will not
+write anything until you review it.
+1. Calendar only
+2. Calendar plus connected email and/or Slack [name only sources that are connected]
+3. Not now
+```
+
+If the user chooses a source, state the exact source and its read-only scope before
+access. Report evidence and uncertainty separately from the user's own description.
+If no source is connected, say so plainly and offer the normal connection path later;
+do not make a failed connection look like a data scan.
 
 ### Offer qualified pages
 
@@ -513,7 +616,11 @@ Say: "Now the fun part — let's connect the tools you use day to day."
 - Atlassian (Jira + Confluence) — Tickets and docs in daily plans. Setup: 3 min
 ```
 
-Dex can also connect hundreds of other tools with `/connect`. The quick ones ask you to paste a key; browser sign-ins need a one-time setup where you register your own app for Dex in that tool's own settings. Only Google and Linear have had Dex's security review; anything else asks for your explicit opt-in before Dex continues.
+Dex can connect other tools with `/connect`. Describe each integration by its actual
+status: **connected**, **available to connect**, or **not yet available**. Do not ask
+an end user to create an OAuth app, expose callback ports, or compare providers by
+Dex's internal security-review labels. A connection may still ask for an explicit,
+plain-language consent to the exact read/write scope.
 
 If any integrations are already connected, briefly note them so you don't re-offer.
 
@@ -554,7 +661,9 @@ For each integration the user selects, follow its `route`:
      - What new capabilities are now available
      - Privacy and trust level summary
   4. Move to the next selected integration
-- `connect`: invoke `/connect` for that provider; never invent a setup skill or setup time. `/connect` explains whether it needs a pasted key or the browser-sign-in setup. For anything other than Google or Linear, explain that it has not had Dex's security review and get explicit opt-in before using `--allow-unvetted`.
+- `connect`: invoke `/connect` for that provider; never invent a setup skill or setup
+  time. If Dex does not have a managed sign-in for it, say it is not yet available
+  rather than asking the user to create an app or paste browser-session cookies.
 
 If the user selects multiple, run them in sequence. After each one, confirm success before moving to the next.
 
@@ -596,7 +705,9 @@ Say: "Granola captures your meeting notes and transcripts. I can help you proces
 
 **Processing modes (once connected):**
 - **Manual** (recommended) — Run `/process-meetings` when you want. No extra LLM API key needed.
-- **Automatic** — Background sync every 30 minutes. Requires an LLM API key (Gemini/Anthropic/OpenAI).
+- **Keep it ready** — Dex can look for unprocessed notes on the scheduled scan, then
+  offer to process them in an active Claude session. It does not run your Claude
+  subscription as a hidden background service.
 
 **What gets processed:**
 When you first connect Granola (or later via `/getting-started`), you'll choose:
@@ -613,16 +724,9 @@ Want to connect Granola now with `/granola-setup`, then set up manual or automat
    ```
 2. Say: "✓ Manual processing enabled. Once Granola is connected via `/granola-setup`, run `/process-meetings` or `/getting-started` to process your meetings."
 
-**If automatic:**
-1. Ask which provider (Gemini has free tier)
-2. Get their API key
-3. Update `.env` with the provider key and `System/user-profile.yaml` with:
-   ```yaml
-   meeting_processing:
-     mode: automatic
-     api_provider: gemini # or anthropic/openai, matching the user's choice
-   ```
-4. Say: "✓ Automatic processing enabled. I'll sync every 30 minutes. You can still use `/getting-started` for historical data."
+**If they want it kept ready:** explain that the scheduled scan only detects and
+queues notes. At the next active session Dex offers a reviewed, consented processing
+run; it does not silently spend a subscription or collect an OpenAI/Gemini key.
 
 ### Analytics Notice (Inform, Don't Ask):
 
@@ -706,34 +810,34 @@ After updating, all Dex skills will work automatically. For now, you can continu
 
 ### Completion Message
 
-Say: "✓ **Your workspace is ready, [Name]!**
+Say:
 
-I've configured your system with:
-- Strategic pillars: [list their pillars]
-- Folder structure for PARA method
-- [Any optional features they enabled]
-- **All your integrations** (calendar, Granola, etc.)
+```
+✓ Your workspace is ready, [Name].
 
-You've already seen the first-week snapshot from the calendar data Dex could read.
+Here is the first brief I’ll use to help:
+- What matters now: [current work / pillars]
+- This week: [week success]
+- This quarter: [quarter outcome]
+- People to keep in mind: [only confirmed names]
 
-**Want me to run the deeper getting-started tour?** It can show you around the workspace and help process meeting history. (Recommended)
+Where I have calendar evidence, I’ve shown it separately from what you told me. We
+can refine this whenever your work changes.
 
-[If yes:] Great! Running `/getting-started` now...
+What would be most useful first?
+1. Make a weekly plan together
+2. Process a small, reviewed batch of meeting notes
+3. Connect another source
+4. I’ll explore on my own
+```
 
-[Then actually invoke the `/getting-started` skill.]
+On 1, invoke `/week-plan` and start from the user’s stated current work and desired
+week. On 2, invoke `/process-meetings` with its user-reviewed backfill choice. On 3,
+show only integrations that are genuinely available to connect. On 4, end cleanly.
 
-[If no:] No problem! You can run `/getting-started` anytime. For now, try `/daily-plan` to see your day.
-
-**Say this in BOTH cases**, whether or not they wanted the tour — it sits outside the yes/no branches on purpose, and someone who said yes should hear it too:
-
-📖 One more thing worth bookmarking: the **Dex Guide** at https://heydex.ai/help/ — a plain-English walkthrough of everything Dex can do, with copy-paste prompts to steal. Great for your first week."
-
-Then ask: "Want me to put a few gentle nudges in your calendar for your first few weeks? One a day, each with something to try. They're all-day reminders marked private and free, so they never block your time or make you look busy — and you can delete the whole thing in one tap."
-
-Present two choices: **Yes, add them** and **No thanks**.
-
-- On **Yes, add them**: call `generate_nudge_calendar()`. Tell them the file is ready, give its returned path, and explain that opening it will offer to add a new calendar called Dex. On macOS, offer to open it for them with `open <path>`. Say plainly: choose "New Calendar" if asked, so it stays separate and is easy to remove.
-- On **No thanks**: say nothing more about it and move on. Do not ask again. Do not capture anything.
+Offer `/getting-started` as a later, optional guide — not a dramatic claim that Dex
+has already created plans or pages. Do not add calendar nudges during onboarding.
+The user can ask for reminders later after seeing how Dex helps.
 
 ---
 
