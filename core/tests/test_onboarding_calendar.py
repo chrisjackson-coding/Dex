@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -75,6 +76,101 @@ def test_save_calendar_selection_stores_valid_live_calendar(
         "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
         "basis": "default",
         "reason": "Dex hasn't worked this out from your calendar.",
+    }
+
+
+def test_save_calendar_selection_persists_google_provider_and_infers_identity(
+    onboarding_vault,
+    monkeypatch,
+):
+    reader = SimpleNamespace(
+        list_calendars=lambda: {
+            "success": True,
+            "calendars": [
+                {
+                    "title": "Jane",
+                    "identifier": "jane@acme.com",
+                    "primary": True,
+                    "type": "google",
+                },
+                {
+                    "title": "Team",
+                    "identifier": "john@acme.com",
+                    "primary": False,
+                    "type": "google",
+                },
+            ],
+            "count": 2,
+        }
+    )
+    monkeypatch.setattr(
+        calendar_server,
+        "_get_google_calendar_reader",
+        lambda: reader,
+        raising=False,
+    )
+    _start_session()
+
+    result = _call_tool(
+        "save_calendar_selection",
+        {
+            "provider": "google",
+            "work_calendar": "jane@acme.com",
+            "calendar_count": 999,
+        },
+    )
+
+    assert result["success"] is True
+    assert result["data"]["derived_identity"] == {
+        "name": "Jane",
+        "domain": "acme.com",
+    }
+    session = onboarding_server.load_session()
+    assert session["data"]["work_email"] == "jane@acme.com"
+    assert session["data"]["calendar"] == {
+        "provider": "google",
+        "work_calendar": "jane@acme.com",
+        "calendar_count": 2,
+        "lazy_load": True,
+    }
+
+
+def test_save_calendar_selection_rejects_unknown_provider(onboarding_vault):
+    _start_session()
+
+    result = _call_tool(
+        "save_calendar_selection",
+        {
+            "provider": "outlook",
+            "work_calendar": "dave@example.com",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["field"] == "provider"
+    assert "calendar" not in onboarding_server.load_session()["data"]
+
+
+def test_save_calendar_selection_persists_explicit_no_calendar(
+    onboarding_vault,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        calendar_server,
+        "_get_calendar_list_result",
+        lambda: pytest.fail("No provider should not list Apple calendars"),
+    )
+    _start_session()
+
+    result = _call_tool(
+        "save_calendar_selection",
+        {"provider": "none"},
+    )
+
+    assert result["success"] is True
+    assert result["data"]["calendar"] == {"provider": "none"}
+    assert onboarding_server.load_session()["data"]["calendar"] == {
+        "provider": "none"
     }
 
 

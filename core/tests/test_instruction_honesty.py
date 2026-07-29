@@ -223,20 +223,34 @@ def test_missing_anthropic_key_points_to_env_file() -> None:
     ) == "API key missing — add it to your .env file"
 
 
-def test_onboarding_skips_calendar_cleanly_on_non_macos() -> None:
+def test_onboarding_offers_only_calendars_that_work_on_this_computer() -> None:
+    """Apple stays macOS-only, but Dex must not call any calendar macOS-only.
+
+    Dex ships its own Google sign-in, so Google Calendar genuinely works on
+    Windows and Linux. The old promise ("calendar sync is only available on
+    macOS") is now false, and repeating it would send a Windows user away from
+    a path that works. What still has to hold is that a non-Mac user is never
+    offered the Mac-only option, never sent to macOS System Settings, and never
+    blocked.
+    """
     flow = _read(".claude/flows/onboarding.md")
     calendar_step = flow.split("## Calendar First (Before Step 1)", 1)[1].split(
         "## Step 1:", 1
     )[0]
+    lowered = calendar_step.lower()
 
     assert "uname -s" in calendar_step
-    assert "non-macOS" in calendar_step
-    assert "calendar sync is currently available only on macos" in calendar_step.lower()
+    assert "non-macos" in lowered
+    # The retired claim must not creep back in.
+    assert "calendar sync is currently available only on macos" not in lowered
+    assert "do not tell the user that calendar setup is macos-only" in lowered
+    # Apple's path stays gated to macOS; Google is offered everywhere.
+    assert "do not call `calendar_list_calendars`" in lowered
+    assert "do not show macos settings guidance" in lowered
+    assert "works on any computer" in lowered
     assert "save_calendar_selection(skipped=true)" in calendar_step
     assert "continue to Step 1" in calendar_step
-    assert "Do not call `calendar_list_calendars`" in calendar_step
-    assert "show macOS settings guidance" in calendar_step
-    assert "block onboarding" in calendar_step
+    assert "never blocks" in lowered or "non-blocking" in lowered
     assert calendar_step.index("uname -s") < calendar_step.index(
         "calendar_list_calendars"
     )

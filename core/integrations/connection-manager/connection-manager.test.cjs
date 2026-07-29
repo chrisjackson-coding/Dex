@@ -110,6 +110,51 @@ test('catalog: google resolves to an OAuth descriptor', () => {
   assert.ok(catalog.KEY_MODES.has(g.authMode) === false, 'google is OAuth, not a key mode');
   assert.match(g.authorizationUrl, /^https:\/\//);
   assert.match(g.tokenUrl, /^https:\/\//);
+  assert.match(g.publicClientId, /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/);
+});
+
+test('store: Google has a public PKCE client without a stored app or client secret', () => {
+  const app = store.getOAuthApp('google');
+  assert.ok(app);
+  assert.equal(app.publicClient, true);
+  assert.equal(app.clientSecret, '');
+  assert.equal(fs.existsSync(path.join(TMP_VAULT, 'System', 'credentials', 'oauth-apps.json')), false);
+});
+
+test('connect: Google public client uses PKCE, Calendar read-only, and an empty client secret', async () => {
+  const opened = [];
+  let authorization;
+  let exchange;
+  try {
+    await cli.cmdConnect('google', {}, {
+      presenceProvider: { available: true, async verify() { return true; } },
+      openBrowser(url) { opened.push(url); },
+      oauthProvider: {
+        async startCallbackServer() {
+          return {
+            redirectUri: 'http://127.0.0.1:3847/callback',
+            async waitForCode() { return { code: 'TEST-GOOGLE-CODE' }; },
+          };
+        },
+        buildAuthorizationUrl(provider, input) {
+          authorization = { provider, input };
+          return { url: 'https://accounts.google.com/test', codeVerifier: 'TEST-PKCE', state: 'TEST-STATE' };
+        },
+        async exchangeCodeForToken(provider, input) {
+          exchange = { provider, input };
+          return { access_token: 'TEST-GOOGLE-ACCESS', refresh_token: 'TEST-GOOGLE-REFRESH', expires_at: Date.now() + 3_600_000 };
+        },
+      },
+    });
+    assert.deepEqual(opened, ['https://accounts.google.com/test']);
+    assert.equal(authorization.provider.id, 'google');
+    assert.equal(authorization.provider.usePkce, true);
+    assert.deepEqual(authorization.input.scopes, ['https://www.googleapis.com/auth/calendar.readonly']);
+    assert.equal(exchange.input.clientSecret, '');
+    assert.equal(exchange.input.codeVerifier, 'TEST-PKCE');
+  } finally {
+    if (store.getConnection('google')) store.deleteToken('google');
+  }
 });
 
 test('catalog: unknown provider throws', () => {

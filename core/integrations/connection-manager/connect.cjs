@@ -80,8 +80,9 @@ async function cmdConnect(
   const { connId, alias } = store.parseConnectionId(flags.as ? `${provider}:${flags.as}` : provider);
   const app = store.getOAuthApp(provider); // OAuth app is shared across a provider's accounts
   if (!app || !app.clientId) {
-    // Non-technical ICP: the user never hand-edits a file. The /connect skill captures the
-    // client id/secret in chat and runs `register-app` to write them — this error just routes there.
+    // Providers without a Dex-built-in app keep the existing conversational
+    // setup: /connect captures the user's client id/secret and register-app
+    // writes them, so the user never hand-edits a file.
     console.error(
       `'${provider}' has no OAuth app registered yet.\n` +
         `Dex can set this up with you — no file editing. It will ask for the client id and secret\n` +
@@ -91,7 +92,10 @@ async function cmdConnect(
     );
     process.exit(1);
   }
-  const scopes = catalog.normalizeScopes(provider, flags.scopes ? flags.scopes.split(',') : []);
+  const requestedScopes = flags.scopes
+    ? flags.scopes.split(',')
+    : providerConfig.defaultScopes || [];
+  const scopes = catalog.normalizeScopes(provider, requestedScopes);
 
   const cb = await oauthProvider.startCallbackServer();
   const { url, codeVerifier, state } = oauthProvider.buildAuthorizationUrl(providerConfig, {
@@ -551,8 +555,11 @@ function cmdCoverage() {
 
 function cmdAuthUrl(provider, flags) {
   const app = store.getOAuthApp(provider) || { clientId: 'YOUR_CLIENT_ID' };
-  const scopes = catalog.normalizeScopes(provider, flags.scopes ? flags.scopes.split(',') : []);
   const providerConfig = catalog.getProviderConfig(provider);
+  const requestedScopes = flags.scopes
+    ? flags.scopes.split(',')
+    : providerConfig.defaultScopes || [];
+  const scopes = catalog.normalizeScopes(provider, requestedScopes);
   if (!providerConfig.supported) throw new Error(`'${provider}' is browse-only: ${providerConfig.reason}`);
   const { url, state, codeVerifier } = oauth.buildAuthorizationUrl(providerConfig, {
     clientId: app.clientId,

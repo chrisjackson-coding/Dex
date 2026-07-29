@@ -28,17 +28,63 @@ Remember this for the rest of onboarding. Every step that says "present options"
 
 Say: "Welcome to Dex. Before I ask you anything, let's connect your calendar — at the end of setup I'll show you your actual week, organised. It takes a few seconds, and you can skip it."
 
-This opening is separate from the eight validated profile steps. It must stay non-blocking.
+This opening is separate from the eight validated profile steps. It must stay non-blocking. If the user hesitates, skips, or anything fails, move on to Step 1 without friction and without apology.
 
-Detect the host platform first. Run `uname -s` when available; if that command is unavailable, use the runtime-reported operating system.
+Ask one question:
 
-**On non-macOS platforms (anything other than `Darwin`):**
+> "Where does your work calendar live?"
 
-Say: "Calendar sync is currently available only on macOS, so I'll skip calendar setup on this computer."
+Present these options, using the question tool you detected above. Offer **Apple Calendar** only on macOS (run `uname -s`; `Darwin` means macOS). Offer the other three everywhere.
 
-Call `save_calendar_selection(skipped=true)`, then continue to Step 1. Do not call `calendar_list_calendars`, show macOS settings guidance, or block onboarding.
+1. **Google Calendar** — works on any computer
+2. **Outlook / Microsoft 365**
+3. **Apple Calendar on this Mac** *(macOS only)*
+4. **Skip for now**
 
-**On macOS:**
+On a non-macOS computer, never offer the Apple option, do not call `calendar_list_calendars`, and do not show macOS settings guidance — none of it applies there. Google is a real, working choice on every operating system, so do not tell the user that calendar setup is macOS-only.
+
+### If they choose Google Calendar
+
+Say: "I'll open Google in your browser. Dex asks for one permission — permission to read your calendar — and nothing else."
+
+Run:
+
+```bash
+node core/integrations/connection-manager/connect.cjs connect google --scopes calendar.readonly
+```
+
+Dex ships its own Google sign-in, so there is nothing for the user to register and no developer console. Do not ask them for a client id or secret, and do not send them to `/google-workspace-setup`.
+
+**If Google shows an unverified-app warning**, say so calmly and truthfully:
+
+> "Google is showing an unverified-app warning. If you're comfortable continuing, choose **Advanced**, then **Go to Dex**. Dex only asks to read your calendar."
+
+If they'd rather not continue past that screen, treat it as a skip: call `save_calendar_selection(skipped=true)` and go to Step 1. Never push.
+
+Once connected, call `list_calendars` from the Google reader to get their calendars:
+
+```bash
+python -c "from core.integrations.google.calendar import list_calendars; import json; print(json.dumps(list_calendars()))"
+```
+
+Say: "Which calendar should I use for your work schedule?" and present every returned `title` as a numbered list. Resolve a number to that calendar's `identifier`, then call `save_calendar_selection` from the Onboarding MCP with:
+- `provider`: `"google"`
+- `work_calendar`: the selected calendar's `identifier`
+- `calendar_count`: the `count` returned by the listing
+- `work_email`: the identifier only when it is an email address; otherwise omit it
+
+Then handle `working_week_suggestion` and `derived_identity` from the response exactly as described in the Apple path below — the response shape is identical, including the Step 1 and Step 4 shortcuts. Do not bypass either validation call.
+
+**If the sign-in fails or the browser never opens:** say "That didn't connect — no problem, we can do it later with `/connect google`," call `save_calendar_selection(skipped=true)`, and continue to Step 1. Never retry more than once, and never turn this into troubleshooting during setup.
+
+### If they choose Outlook / Microsoft 365
+
+Dex cannot read an Outlook calendar directly yet. Be honest and brief, and take the good path where one exists:
+
+- **On macOS:** say "I can't read Outlook directly yet. If your Outlook account is already in your Mac's Calendar app, I can use it from there." Then follow the Apple Calendar path below. If Outlook isn't in Calendar.app, treat it as a skip.
+- **Anywhere else:** say "I can't read Outlook calendars yet — that's coming. Everything else in setup works the same, and your plan will just be based on what you tell me instead." Call `save_calendar_selection(skipped=true)` and continue.
+
+### If they choose Apple Calendar
 
 Call `calendar_list_calendars` from the Calendar MCP to get the calendar names Calendar.app can see.
 
@@ -54,6 +100,7 @@ Present every returned calendar name as a numbered list:
 ```
 
 The user can reply with a number or type the calendar name. Resolve a number to the exact returned name, then call `save_calendar_selection` from the Onboarding MCP with:
+- `provider`: `"apple"`
 - `work_calendar`: the exact selected calendar name
 - `calendar_count`: the `count` returned by `calendar_list_calendars`
 - `work_email`: the selected name only when that calendar name is an email address; otherwise omit it
@@ -61,9 +108,10 @@ The user can reply with a number or type the calendar name. Resolve a number to 
 Example:
 ```
 save_calendar_selection(
-  work_calendar="jane@example.com",
-  work_email="jane@example.com",
-  calendar_count=4
+    provider="apple",
+    work_calendar="jane@example.com",
+    work_email="jane@example.com",
+    calendar_count=4
 )
 ```
 
@@ -90,6 +138,10 @@ Offer two choices:
 2. Skip for now — call `save_calendar_selection(skipped=true)`
 
 Do not block onboarding when they skip. `/dex-doctor` will confirm the calendar setup later. Continue to Step 1.
+
+### If they skip
+
+Call `save_calendar_selection(skipped=true)` and continue to Step 1. Say one line — "No problem, we can connect it whenever you like" — and nothing more.
 
 ---
 

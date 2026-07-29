@@ -7,6 +7,7 @@ import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -550,6 +551,76 @@ class TestFirstWeekAnalysis:
         onboarding_server.save_session(session)
 
         assert onboarding_server._load_first_week_profile() == session["data"]
+
+    def test_google_calendar_works_off_macos(self, monkeypatch):
+        from core.mcp import calendar_server
+
+        event = {
+            "title": "Customer review",
+            "start": "2026-07-28T13:00:00",
+            "end": "2026-07-28T13:30:00",
+            "attendees": [],
+        }
+        calls = []
+        reader = SimpleNamespace(
+            get_events=lambda *args, **kwargs: (
+                calls.append((args, kwargs))
+                or {
+                    "success": True,
+                    "calendar": "jane@acme.com",
+                    "date_range": "2026-07-27 to 2026-08-03",
+                    "events": [event],
+                    "count": 1,
+                }
+            )
+        )
+        monkeypatch.setattr(onboarding_server.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(onboarding_server, "BASE_DIR", REPO_ROOT)
+        monkeypatch.setattr(
+            onboarding_server,
+            "_load_first_week_profile",
+            lambda: {
+                "calendar": {
+                    "provider": "google",
+                    "work_calendar": "jane@acme.com",
+                }
+            },
+        )
+        monkeypatch.setattr(
+            calendar_server,
+            "_get_google_calendar_reader",
+            lambda: reader,
+            raising=False,
+        )
+
+        assert onboarding_server.get_calendar_events_for_week() == [event]
+        arguments = calls[0][1]
+        start_date = date.fromisoformat(arguments["start_date"])
+        end_date = date.fromisoformat(arguments["end_date"])
+        assert arguments == {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "calendar_id": "jane@acme.com",
+            "with_attendees": True,
+        }
+        assert start_date.weekday() == 0
+        assert (end_date - start_date).days == 7
+
+    def test_apple_calendar_keeps_macos_only_message(self, monkeypatch):
+        monkeypatch.setattr(onboarding_server.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(
+            onboarding_server,
+            "_load_first_week_profile",
+            lambda: {"calendar": {"provider": "apple"}},
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "^First-week calendar analysis is currently available only on macOS.$"
+            ),
+        ):
+            onboarding_server.get_calendar_events_for_week()
 
 
 class TestIdentityDerivation:

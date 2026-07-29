@@ -149,10 +149,12 @@ If the match is unambiguous (one obvious hit), just confirm it inline rather tha
 
 OAuth services need an OAuth app (a client id + secret) to drive the flow. Check whether one already exists before asking the user to register anything.
 
-**Google: Calendar is the simpler first scope; Gmail is more involved.** Dex does not ship a pre-registered Google OAuth app, so the user needs to register their own Google client unless they already saved one or supplied it through the environment. Calendar usually has a lighter setup and reading someone's day/week is a useful first connection. Gmail is a "restricted" scope in Google's eyes and carries extra verification steps, so treat it as a deliberate, later step rather than part of a quick first connect.
+**Google needs nothing from the user.** Dex ships a public Desktop OAuth client for its Calendar-only PKCE sign-in, with no client secret. Connecting Google is a browser sign-in and nothing else — never send someone to Google's developer console for it, and never ask them for a client id or secret. If Google displays an "unverified app" warning, describe it plainly and let the user decide whether to choose **Advanced** → **Go to Dex**.
+
+**Google: Calendar is the simpler first scope; Gmail is more involved.** Calendar is read-only, is what Dex's public sign-in is registered for, and reading someone's day/week is a useful first connection. Gmail is a "restricted" scope in Google's eyes and carries extra verification steps, so treat it as a deliberate, later step rather than part of a quick first connect — and one the user registers their own app for.
 
 **4a. Check for an existing OAuth app.**
-OAuth app credentials live in `{DEX_VAULT}/System/credentials/oauth-apps.json`, keyed by service. Dex does not bundle provider client credentials. If the user has already registered an app there, or supplied `DEX_OAUTH_<SERVICE>_CLIENT_ID` and `_CLIENT_SECRET`, you can connect straight away — skip to 4c.
+OAuth app credentials live in `{DEX_VAULT}/System/credentials/oauth-apps.json`, keyed by service. Google is the one provider Dex supplies a public client identifier for, with PKCE and no client secret. If the user has already registered an app there, or supplied `DEX_OAUTH_<SERVICE>_CLIENT_ID` and `_CLIENT_SECRET`, that takes precedence and you can connect straight away — skip to 4c.
 
 **4b. Register an OAuth app (only if none exists) — YOU write the file, the user never edits it.**
 
@@ -198,6 +200,20 @@ This opens the browser to the provider's consent screen and waits on the local l
   (look for `access_type=offline`). Retry up to twice, then offer to come back later.
 
 Re-run `connect.cjs status` to confirm the new connection shows 🟢.
+
+**4d. If you just connected a calendar, offer to use it.**
+
+Connecting Google Calendar stores the sign-in — it does not, on its own, change which calendar Dex reads for daily plans and meeting prep. That's a separate choice, and the user has to make it or the connection quietly does nothing for them.
+
+So when a Google connection includes the calendar scope, finish the job in the same breath:
+
+1. List what they now have: `calendar_list_calendars` from the Calendar MCP.
+2. Ask: "Which of these is your work calendar? I'll use it for your daily plans and meeting prep."
+3. Save the answer with `calendar_set_source` from the Calendar MCP:
+   `calendar_set_source(provider="google", calendar_id="<the identifier they chose>")`
+4. Confirm in one line: "Done — I'll read [calendar] from now on. Ask me what your week looks like."
+
+If they'd rather not choose now, leave it: the connection stays, and they can say "use my Google calendar" whenever. Don't nag, and don't set it for them without asking — this changes where every future daily plan gets its meetings.
 
 ### Step 5: Connect — Class B (Paste a Key)
 

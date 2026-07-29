@@ -51,14 +51,17 @@ The commands below describe the live battery, but direct Core `connect` /
 `set-key` now fail closed until an OS-bound signed host supplies the trusted
 presence provider. Do not restore an environment bypass to make this convenient.
 
-1. Register your **own** OAuth app (e.g. Google Cloud → OAuth client, type "Desktop app" or "Web" with redirect `http://127.0.0.1:3847/callback`).
-2. Run `node connect.cjs register-app google` in a terminal. Dex visibly asks
-   for the client id and hides the client secret while it is pasted. Automation
-   can still pipe two lines (client id, then client secret). Never type a secret
-   as part of the shell command itself.
+1. Google uses Dex's public Desktop OAuth client with PKCE by default; Dex ships
+   no Google client secret. For another OAuth
+   provider — or to override Google with your own app — register that app in the
+   provider's developer console.
+2. For a user-owned app, run `node connect.cjs register-app <provider>` in a
+   terminal. Dex visibly asks for the client id and hides the client secret
+   while it is pasted. Automation can still pipe two lines (client id, then
+   client secret). Never type a secret as part of the shell command itself.
 3. Connect, then watch health:
    ```bash
-   node connect.cjs connect google --scopes https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/gmail.readonly
+   node connect.cjs connect google --scopes https://www.googleapis.com/auth/calendar.readonly
    node connect.cjs status
    node connect.cjs status --json
    node connect.cjs probe google

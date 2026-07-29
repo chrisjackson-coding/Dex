@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { writeFileAtomic, withLockSync, withLock } = require('./fs-safe.cjs');
 const { TOKEN_ENVELOPE_VERSION, LOCK_PROTOCOL } = require('./contract.cjs');
+const catalog = require('./catalog.cjs');
 
 const KEYCHAIN_SERVICE = 'dex-connection-manager';
 const KEYCHAIN_ACCOUNT = 'token-store-key';
@@ -1154,27 +1155,46 @@ function getConnection(id) {
   return readRegistry()[resolveConnId(id)] || null;
 }
 
-// ---- OAuth app credentials (your own registered apps) -----------------------
+// ---- OAuth app credential resolution + user-registered overrides ------------
 
 function oauthAppsPath() {
   return path.join(credentialsDir(), 'oauth-apps.json');
 }
 
-/** Read this user's own OAuth client id/secret for a provider. */
+/** Resolve the OAuth client id/secret for a provider using the policy below. */
 function getOAuthApp(provider) {
-  // Env override wins (handy for headless/dev): DEX_OAUTH_<PROVIDER>_CLIENT_ID / _CLIENT_SECRET
+  // OAuth-app precedence is security policy. Keep every caller on this one
+  // resolver so first sign-in, auth URL generation, and refresh cannot drift:
+  // 1. explicit environment override
+  // 2. the user's registered app in oauth-apps.json
+  // 3. Dex's public PKCE client identifier, where the provider configuration
+  //    explicitly declares one. This fallback never carries a client secret.
   const envId = process.env[`DEX_OAUTH_${provider.toUpperCase().replace(/-/g, '_')}_CLIENT_ID`];
   const envSecret = process.env[`DEX_OAUTH_${provider.toUpperCase().replace(/-/g, '_')}_CLIENT_SECRET`];
-  if (envId) return { clientId: envId, clientSecret: envSecret || '' };
+  if (envId) return { clientId: envId, clientSecret: envSecret || '', builtin: false };
   const p = oauthAppsPath();
-  if (!fs.existsSync(p)) return null;
-  const apps = JSON.parse(fs.readFileSync(p, 'utf8'));
-  const app = apps[provider];
-  if (!app) return null;
-  return {
-    clientId: app.clientId,
-    clientSecret: decrypt(app.clientSecret, `oauth-app:${provider}`),
-  };
+  if (fs.existsSync(p)) {
+    const apps = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const app = Object.prototype.hasOwnProperty.call(apps, provider)
+      ? apps[provider]
+      : null;
+    if (app) {
+      return {
+        clientId: app.clientId,
+        clientSecret: decrypt(app.clientSecret, `oauth-app:${provider}`),
+        builtin: false,
+      };
+    }
+  }
+  let publicClientId = '';
+  try {
+    publicClientId = catalog.getProviderConfig(provider).publicClientId || '';
+  } catch {
+    // Unknown providers remain unconfigured rather than becoming a fallback.
+  }
+  return publicClientId
+    ? { clientId: publicClientId, clientSecret: '', builtin: true, publicClient: true }
+    : null;
 }
 
 /**

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Apple Calendar MCP Server for Dex
+Calendar MCP Server for Dex
 
-Provides read/write access to Apple Calendar via AppleScript.
-Works with any calendar synced to Calendar.app, including Google accounts.
+Routes reads to the selected Apple or Google calendar provider.
+Apple Calendar remains read/write; direct Google Calendar access is read-only.
 
 Tools:
 - calendar_list_calendars: List all available calendars
+- calendar_set_source: Choose which calendar provider Dex reads
 - calendar_get_events: Get events for a date range
 - calendar_get_today: Quick access to today's meetings
 - calendar_create_event: Create a new event
@@ -23,6 +24,8 @@ Tools:
 - reminders_clear_completed: Remove completed Reminders from a list
 """
 
+import copy
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +34,7 @@ import re
 # Vault paths (centralized in core.paths)
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from functools import cache
 from pathlib import Path
@@ -38,14 +42,17 @@ from typing import Optional
 
 import mcp.server.stdio
 import mcp.types as types
+import yaml
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
 _repo_root = str(Path(__file__).parent.parent.parent)
 if _repo_root not in sys.path:
     sys.path.append(_repo_root)
+from core.lifecycle import service as lifecycle_service
 from core.paths import PEOPLE_DIR
 from core.paths import VAULT_ROOT as VAULT_PATH
+from core.transaction.engine import PlanEntry
 from core.utils.feature_status import feature_status
 
 # Health system — error queue and health reporting
@@ -78,9 +85,16 @@ logger = logging.getLogger(__name__)
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
 CALENDAR_FEATURE = "Calendar access"
 REMINDERS_FEATURE = "Reminders access"
+CALENDAR_PROVIDERS = {"apple", "google", "none"}
+GOOGLE_NEXT_EVENT_WINDOW_DAYS = 14
+GOOGLE_SEARCH_MAX_DAYS_EACH_WAY = 365
 
 # User profile path
 USER_PROFILE_PATH = VAULT_PATH / "System" / "user-profile.yaml"
+
+
+class CalendarProfileError(ValueError):
+    """Raised when a calendar choice cannot safely update the user profile."""
 
 
 def get_default_work_calendar() -> str:
@@ -175,6 +189,359 @@ def run_shell_script(script_name: str, *args) -> tuple[bool, str]:
 def _broken_feature_payload(feature: str, error: str) -> dict:
     """Preserve a legacy Calendar/Reminders error while adding status fields."""
     return feature_status(feature, "broken", error, error=error)
+
+
+def _yaml_scalar(value: str) -> str:
+    """Render one safe, single-line YAML scalar without reformatting the file."""
+    rendered_lines = yaml.safe_dump(
+        value,
+        allow_unicode=True,
+        default_flow_style=True,
+    ).splitlines()
+    if rendered_lines and rendered_lines[-1] == "...":
+        rendered_lines.pop()
+    if len(rendered_lines) != 1:
+        raise CalendarProfileError(
+            "Calendar names must fit on one line; calendar source was not changed."
+        )
+    return rendered_lines[0]
+
+
+def _split_line_ending(line: str) -> tuple[str, str]:
+    body = line.rstrip("\r\n")
+    return body, line[len(body):]
+
+
+def _replace_calendar_value(line: str, key: str, value: str) -> str:
+    """Replace one calendar scalar while preserving spacing and inline comments."""
+    body, ending = _split_line_ending(line)
+    match = re.fullmatch(
+        rf"(?P<prefix>  {re.escape(key)}[ \t]*:[ \t]*)(?P<value>.*)",
+        body,
+    )
+    if match is None:
+        raise CalendarProfileError(
+            "Profile calendar formatting is not safe to edit; "
+            "calendar source was not changed."
+        )
+
+    existing_value = match.group("value")
+    comment_match = re.fullmatch(r".*?(?P<comment>[ \t]+#.*)?", existing_value)
+    comment = (
+        comment_match.group("comment")
+        if comment_match is not None and comment_match.group("comment")
+        else ""
+    )
+    return f"{match.group('prefix')}{_yaml_scalar(value)}{comment}{ending}"
+
+
+def _set_calendar_values(
+    text: str,
+    *,
+    provider: str,
+    calendar_id: Optional[str],
+    calendar_exists: bool,
+) -> str:
+    """Surgically set calendar values while preserving every unrelated byte."""
+    lines = text.splitlines(keepends=True)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    calendar_starts = []
+    for index, line in enumerate(lines):
+        body, _ending = _split_line_ending(line)
+        if re.match(r"^calendar[ \t]*:", body):
+            calendar_starts.append(index)
+
+    if not calendar_starts:
+        if calendar_exists:
+            raise CalendarProfileError(
+                "Profile calendar formatting is not safe to edit; "
+                "calendar source was not changed."
+            )
+        suffix = "" if not text or text.endswith(("\n", "\r")) else newline
+        addition = f"{suffix}calendar:{newline}  provider: {provider}{newline}"
+        if calendar_id is not None:
+            addition += f"  work_calendar: {_yaml_scalar(calendar_id)}{newline}"
+        return text + addition
+
+    if len(calendar_starts) != 1:
+        raise CalendarProfileError(
+            "Profile contains more than one calendar section; "
+            "calendar source was not changed."
+        )
+
+    start = calendar_starts[0]
+    calendar_line, _ending = _split_line_ending(lines[start])
+    inline_value = calendar_line.split(":", 1)[1].strip()
+    if inline_value and not inline_value.startswith("#"):
+        raise CalendarProfileError(
+            "Profile calendar settings must use an indented block; "
+            "calendar source was not changed."
+        )
+    if not lines[start].endswith(("\n", "\r")):
+        lines[start] += newline
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        body, _ending = _split_line_ending(lines[index])
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        if body == body.lstrip(" \t"):
+            end = index
+            break
+
+    desired = {"provider": provider}
+    if calendar_id is not None:
+        desired["work_calendar"] = calendar_id
+
+    found: dict[str, int] = {}
+    for index in range(start + 1, end):
+        body, _ending = _split_line_ending(lines[index])
+        for key in desired:
+            if re.match(rf"^  {re.escape(key)}[ \t]*:", body):
+                if key in found:
+                    raise CalendarProfileError(
+                        f"Profile contains more than one calendar.{key} value; "
+                        "calendar source was not changed."
+                    )
+                found[key] = index
+
+    for key, index in found.items():
+        lines[index] = _replace_calendar_value(lines[index], key, desired[key])
+
+    missing = [key for key in desired if key not in found]
+    if missing:
+        addition = "".join(
+            f"  {key}: {_yaml_scalar(desired[key])}{newline}" for key in missing
+        )
+        lines.insert(start + 1, addition)
+
+    return "".join(lines)
+
+
+def _profile_vault_root() -> Path:
+    """Locate the vault root without accepting a path outside its contract."""
+    if (
+        USER_PROFILE_PATH.name != "user-profile.yaml"
+        or USER_PROFILE_PATH.parent.name != "System"
+    ):
+        raise CalendarProfileError(
+            "Calendar source can only be saved in System/user-profile.yaml."
+        )
+    return USER_PROFILE_PATH.parent.parent
+
+
+def _persist_calendar_source(provider: str, calendar_id: Optional[str]) -> None:
+    """Commit one verified source via Dex's lifecycle transaction boundary."""
+    profile_path = USER_PROFILE_PATH
+    if profile_path.is_symlink():
+        raise CalendarProfileError(
+            "System/user-profile.yaml must not be a symlink; "
+            "calendar source was not changed."
+        )
+    if profile_path.exists() and not profile_path.is_file():
+        raise CalendarProfileError(
+            "System/user-profile.yaml must be a regular file; "
+            "calendar source was not changed."
+        )
+    try:
+        original = profile_path.read_text(encoding="utf-8") if profile_path.exists() else ""
+    except OSError as exc:
+        raise CalendarProfileError(
+            "Dex could not safely read System/user-profile.yaml; "
+            "calendar source was not changed."
+        ) from exc
+
+    try:
+        loaded = yaml.safe_load(original)
+    except yaml.YAMLError as exc:
+        raise CalendarProfileError(
+            "System/user-profile.yaml must contain valid YAML; "
+            "calendar source was not changed."
+        ) from exc
+    profile = {} if loaded is None else loaded
+    if not isinstance(profile, dict):
+        raise CalendarProfileError(
+            "System/user-profile.yaml must contain an object; "
+            "calendar source was not changed."
+        )
+
+    calendar_exists = "calendar" in profile
+    existing_calendar = profile.get("calendar")
+    if existing_calendar is not None and not isinstance(existing_calendar, Mapping):
+        raise CalendarProfileError(
+            "Profile calendar settings must contain an object; "
+            "calendar source was not changed."
+        )
+
+    expected = copy.deepcopy(profile)
+    expected_calendar = expected.get("calendar")
+    if not isinstance(expected_calendar, dict):
+        expected_calendar = {}
+        expected["calendar"] = expected_calendar
+    expected_calendar["provider"] = provider
+    if calendar_id is not None:
+        expected_calendar["work_calendar"] = calendar_id
+
+    updated = _set_calendar_values(
+        original,
+        provider=provider,
+        calendar_id=calendar_id,
+        calendar_exists=calendar_exists,
+    )
+    try:
+        reparsed_loaded = yaml.safe_load(updated)
+    except yaml.YAMLError as exc:
+        raise CalendarProfileError(
+            "Calendar profile edit produced invalid YAML; refusing to save."
+        ) from exc
+    reparsed = {} if reparsed_loaded is None else reparsed_loaded
+    if reparsed != expected:
+        raise CalendarProfileError(
+            "Calendar profile edit changed unrelated profile state; refusing to save."
+        )
+    if updated == original:
+        return
+
+    plan = [
+        PlanEntry(
+            "System/user-profile.yaml",
+            updated.encode("utf-8"),
+            mode=(profile_path.stat().st_mode & 0o777) if profile_path.exists() else 0o644,
+            expected_current_sha256=(
+                hashlib.sha256(original.encode("utf-8")).hexdigest()
+                if profile_path.exists()
+                else None
+            ),
+            expected_absent=not profile_path.exists(),
+        )
+    ]
+    vault_root = _profile_vault_root()
+    try:
+        preview = lifecycle_service._preview_transaction(
+            vault_root,
+            plan,
+            purpose="calendar-source-selection",
+            operation="capability-state",
+        )
+        lifecycle_service._execute_approved_transaction(
+            vault_root,
+            plan,
+            purpose="calendar-source-selection",
+            operation="capability-state",
+            approved_token=str(preview["approval_token"]),
+        )
+    except Exception as exc:
+        raise CalendarProfileError(
+            "Dex could not safely save System/user-profile.yaml; "
+            "calendar source was not changed."
+        ) from exc
+
+
+def _available_calendar_titles(result: dict) -> list[str]:
+    calendars = result.get("calendars")
+    if not isinstance(calendars, list):
+        return []
+    titles = []
+    for calendar in calendars:
+        if isinstance(calendar, str):
+            titles.append(calendar)
+        elif isinstance(calendar, dict) and isinstance(calendar.get("title"), str):
+            titles.append(calendar["title"])
+    return titles
+
+
+def _calendar_not_found_payload(
+    *,
+    provider: str,
+    calendar_id: str,
+    available_titles: list[str],
+) -> dict:
+    available = ", ".join(available_titles) if available_titles else "none"
+    return {
+        "success": False,
+        "error": (
+            f"Calendar '{calendar_id}' was not found. Available "
+            f"{provider.title()} calendars: {available}."
+        ),
+    }
+
+
+@cache
+def _resolve_calendar_provider(saved_provider: Optional[str] = None) -> str:
+    """Resolve the selected provider once, defaulting old/invalid profiles to Apple."""
+    provider = saved_provider
+    if provider is None:
+        try:
+            import yaml
+
+            if USER_PROFILE_PATH.exists():
+                profile = yaml.safe_load(
+                    USER_PROFILE_PATH.read_text(encoding="utf-8")
+                ) or {}
+                provider = profile.get("calendar", {}).get("provider")
+        except Exception as error:
+            logger.warning(f"Could not read calendar provider from profile: {error}")
+
+    if provider in CALENDAR_PROVIDERS:
+        return provider
+    return "apple"
+
+
+def _get_google_calendar_reader():
+    """Load the Google reader lazily so existing Apple-only installs still import."""
+    from core.integrations.google import calendar as google_calendar
+
+    return google_calendar
+
+
+def _calendar_not_connected_payload() -> dict:
+    """Return a healthy, non-alarming result for an explicit no-calendar choice."""
+    return feature_status(
+        CALENDAR_FEATURE,
+        "off",
+        "No calendar is connected. Connect Apple Calendar or Google Calendar "
+        "when you want Dex to use your schedule.",
+    )
+
+
+def _google_calendar_read_only_payload() -> dict:
+    """Explain the deliberate read-only boundary without implying a failure."""
+    return feature_status(
+        "Google calendar changes",
+        "off",
+        "Dex can read this Google calendar, but it cannot change events because "
+        "Google access is read-only. Make this change in Google Calendar instead.",
+    )
+
+
+def _google_events_result(
+    *,
+    calendar_name: str,
+    start_date: str,
+    end_date: Optional[str],
+    with_attendees: bool,
+) -> dict:
+    """Call the fixed Google reader boundary and preserve its result envelope."""
+    reader = _get_google_calendar_reader()
+    return reader.get_events(
+        start_date=start_date,
+        end_date=end_date,
+        calendar_id=calendar_name,
+        with_attendees=with_attendees,
+    )
+
+
+def _event_timestamp(event: dict) -> Optional[float]:
+    """Return a sortable timestamp for a Google event start value."""
+    value = event.get("start")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(
+            value.strip().replace("Z", "+00:00").replace(" +0000", "+00:00")
+        ).timestamp()
+    except ValueError:
+        return None
 
 
 def _get_calendar_list_result() -> dict:
@@ -331,11 +698,32 @@ async def handle_list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="calendar_list_calendars",
-            description="List all calendars available in Apple Calendar",
+            description="List all calendars available from the selected provider",
             inputSchema={
                 "type": "object",
                 "properties": {}
             }
+        ),
+        types.Tool(
+            name="calendar_set_source",
+            description="Choose which calendar Dex reads outside of setup",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["apple", "google", "none"],
+                        "description": "Calendar provider Dex should read",
+                    },
+                    "calendar_id": {
+                        "type": "string",
+                        "description": (
+                            "Google calendar identifier or Apple calendar name"
+                        ),
+                    },
+                },
+                "required": ["provider"],
+            },
         ),
         types.Tool(
             name="calendar_get_events",
@@ -623,6 +1011,7 @@ async def handle_call_tool(
         if _HAS_HEALTH:
             _tool_human_messages = {
                 "calendar_list_calendars": "Calendar listing failed",
+                "calendar_set_source": "Calendar source selection failed",
                 "calendar_get_events": "Calendar events lookup failed",
                 "calendar_get_today": "Today's events lookup failed",
                 "calendar_create_event": "Calendar event creation failed",
@@ -645,15 +1034,142 @@ async def _handle_call_tool_inner(
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     """Inner tool handler — wrapped by handle_call_tool for health reporting."""
 
+    global DEFAULT_WORK_CALENDAR
+
     arguments = arguments or {}
+    provider = (
+        _resolve_calendar_provider()
+        if name.startswith("calendar_") and name != "calendar_set_source"
+        else "apple"
+    )
+
+    if name == "calendar_set_source":
+        requested_provider = arguments.get("provider")
+        if isinstance(requested_provider, str):
+            requested_provider = requested_provider.strip().lower()
+        if requested_provider not in CALENDAR_PROVIDERS:
+            result = {
+                "success": False,
+                "error": "Choose a calendar provider: apple, google, or none.",
+            }
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        calendar_id = arguments.get("calendar_id")
+        if isinstance(calendar_id, str):
+            calendar_id = calendar_id.strip()
+        if requested_provider in {"apple", "google"} and (
+            not isinstance(calendar_id, str) or not calendar_id
+        ):
+            result = {
+                "success": False,
+                "error": (
+                    f"calendar_id is required when provider is "
+                    f"'{requested_provider}'."
+                ),
+            }
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        selected_calendar_id = (
+            calendar_id if requested_provider in {"apple", "google"} else None
+        )
+        if requested_provider == "google":
+            listing = _get_google_calendar_reader().list_calendars()
+            if not listing.get("success"):
+                return [
+                    types.TextContent(type="text", text=json.dumps(listing, indent=2))
+                ]
+            calendars = listing.get("calendars")
+            identifiers = (
+                {
+                    calendar.get("identifier")
+                    for calendar in calendars
+                    if isinstance(calendar, dict)
+                }
+                if isinstance(calendars, list)
+                else set()
+            )
+            if selected_calendar_id not in identifiers:
+                result = _calendar_not_found_payload(
+                    provider=requested_provider,
+                    calendar_id=selected_calendar_id,
+                    available_titles=_available_calendar_titles(listing),
+                )
+                return [
+                    types.TextContent(type="text", text=json.dumps(result, indent=2))
+                ]
+        elif requested_provider == "apple":
+            listing = _get_calendar_list_result()
+            if not listing.get("success"):
+                return [
+                    types.TextContent(type="text", text=json.dumps(listing, indent=2))
+                ]
+            available_titles = _available_calendar_titles(listing)
+            if selected_calendar_id not in available_titles:
+                result = _calendar_not_found_payload(
+                    provider=requested_provider,
+                    calendar_id=selected_calendar_id,
+                    available_titles=available_titles,
+                )
+                return [
+                    types.TextContent(type="text", text=json.dumps(result, indent=2))
+                ]
+
+        _persist_calendar_source(requested_provider, selected_calendar_id)
+        _resolve_calendar_provider.cache_clear()
+        _get_available_calendar_names.cache_clear()
+        if selected_calendar_id is not None:
+            DEFAULT_WORK_CALENDAR = selected_calendar_id
+
+        if requested_provider == "none":
+            result = {
+                "success": True,
+                "provider": "none",
+                "message": "Dex will not read from a calendar.",
+            }
+        else:
+            provider_label = requested_provider.title()
+            result = {
+                "success": True,
+                "provider": requested_provider,
+                "calendar_id": selected_calendar_id,
+                "message": (
+                    f"Dex will now read from {provider_label} calendar "
+                    f"'{selected_calendar_id}'."
+                ),
+            }
+        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
     if name == "calendar_list_calendars":
+        if provider == "google":
+            result = _get_google_calendar_reader().list_calendars()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        if provider == "none":
+            result = _calendar_not_connected_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
         result = _get_calendar_list_result()
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
     
     elif name == "calendar_get_events":
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         start_date = arguments.get("start_date", _tz_now().strftime("%Y-%m-%d"))
+
+        if provider == "google":
+            result = _google_events_result(
+                calendar_name=calendar_name,
+                start_date=start_date,
+                end_date=arguments.get("end_date"),
+                with_attendees=False,
+            )
+            return [
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(result, indent=2, cls=DateTimeEncoder),
+                )
+            ]
+        if provider == "none":
+            result = _calendar_not_connected_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         
         # Parse start date
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -724,6 +1240,13 @@ async def _handle_call_tool_inner(
         return await handle_call_tool("calendar_get_events", arguments)
     
     elif name == "calendar_create_event":
+        if provider == "google":
+            result = _google_calendar_read_only_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        if provider == "none":
+            result = _calendar_not_connected_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         title = arguments["title"]
         start_str = arguments["start_datetime"]
@@ -772,6 +1295,49 @@ async def _handle_call_tool_inner(
         query = arguments["query"]
         days_back = arguments.get("days_back", 30)
         days_forward = arguments.get("days_forward", 30)
+
+        if provider == "google":
+            # Reader contract has no search endpoint. Bound the local scan to a
+            # maximum of one year each way (default: 30 days each way).
+            bounded_days_back = max(
+                0,
+                min(int(days_back), GOOGLE_SEARCH_MAX_DAYS_EACH_WAY),
+            )
+            bounded_days_forward = max(
+                0,
+                min(int(days_forward), GOOGLE_SEARCH_MAX_DAYS_EACH_WAY),
+            )
+            today = _tz_now().date()
+            start_date = (today - timedelta(days=bounded_days_back)).isoformat()
+            end_date = (
+                today + timedelta(days=bounded_days_forward + 1)
+            ).isoformat()
+            reader_result = _google_events_result(
+                calendar_name=calendar_name,
+                start_date=start_date,
+                end_date=end_date,
+                with_attendees=False,
+            )
+            if not reader_result.get("success"):
+                result = reader_result
+            else:
+                normalized_query = query.casefold()
+                events = [
+                    event
+                    for event in reader_result.get("events", [])
+                    if normalized_query in str(event.get("title", "")).casefold()
+                ]
+                result = {
+                    "success": True,
+                    "query": query,
+                    "calendar": reader_result.get("calendar", calendar_name),
+                    "events": events,
+                    "count": len(events),
+                }
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        if provider == "none":
+            result = _calendar_not_connected_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         
         # Use fast EventKit search
         success, output = run_shell_script(
@@ -806,6 +1372,13 @@ async def _handle_call_tool_inner(
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
     
     elif name == "calendar_delete_event":
+        if provider == "google":
+            result = _google_calendar_read_only_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        if provider == "none":
+            result = _calendar_not_connected_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         title = arguments["title"]
         event_date = arguments["event_date"]
@@ -840,6 +1413,45 @@ async def _handle_call_tool_inner(
     
     elif name == "calendar_get_next_event":
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
+
+        if provider == "google":
+            # Reader contract has no "next" endpoint. Fourteen days is long
+            # enough for normal planning without downloading an open-ended feed.
+            now = _tz_now()
+            reader_result = _google_events_result(
+                calendar_name=calendar_name,
+                start_date=now.date().isoformat(),
+                end_date=(
+                    now.date() + timedelta(days=GOOGLE_NEXT_EVENT_WINDOW_DAYS)
+                ).isoformat(),
+                with_attendees=False,
+            )
+            if not reader_result.get("success"):
+                result = reader_result
+            else:
+                now_timestamp = now.timestamp()
+                upcoming = [
+                    (event_timestamp, event)
+                    for event in reader_result.get("events", [])
+                    if (event_timestamp := _event_timestamp(event)) is not None
+                    and event_timestamp >= now_timestamp
+                ]
+                upcoming.sort(key=lambda item: item[0])
+                if upcoming:
+                    result = {
+                        "success": True,
+                        "next_event": upcoming[0][1],
+                    }
+                else:
+                    result = {
+                        "success": True,
+                        "message": "No upcoming events",
+                        "next_event": None,
+                    }
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        if provider == "none":
+            result = _calendar_not_connected_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         
         # Use fast EventKit
         success, output = run_shell_script("calendar_eventkit.py", "next", calendar_name)
@@ -875,6 +1487,35 @@ async def _handle_call_tool_inner(
     elif name == "calendar_get_events_with_attendees":
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         start_date = arguments.get("start_date", _tz_now().strftime("%Y-%m-%d"))
+
+        if provider == "google":
+            result = _google_events_result(
+                calendar_name=calendar_name,
+                start_date=start_date,
+                end_date=arguments.get("end_date"),
+                with_attendees=True,
+            )
+            if result.get("success"):
+                for event in result.get("events", []):
+                    for attendee in event.get("attendees") or []:
+                        person_page = find_person_page(
+                            attendee.get("name", ""),
+                            attendee.get("email", ""),
+                        )
+                        attendee["has_person_page"] = person_page is not None
+                        if person_page:
+                            attendee["person_page"] = str(
+                                person_page.relative_to(VAULT_PATH)
+                            )
+            return [
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(result, indent=2, cls=DateTimeEncoder),
+                )
+            ]
+        if provider == "none":
+            result = _calendar_not_connected_payload()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         if "end_date" in arguments:
