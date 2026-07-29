@@ -50,7 +50,7 @@ Say: "I'll open Google in your browser. Dex asks for one permission — permissi
 Run:
 
 ```bash
-node core/integrations/connection-manager/connect.cjs connect google --scopes calendar.readonly
+DEX_VAULT="$PWD" node core/integrations/connection-manager/connect.cjs connect google --scopes calendar.readonly
 ```
 
 Dex ships its own Google sign-in, so there is nothing for the user to register and no developer console. Do not ask them for a client id or secret, and do not send them to `/google-workspace-setup`.

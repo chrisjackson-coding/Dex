@@ -281,6 +281,18 @@ def test_onboarding_confirms_calendar_identity_through_existing_validation() -> 
     assert "Do not bypass either validation call" in calendar_step
 
 
+def test_onboarding_google_connect_targets_the_open_dex_vault() -> None:
+    flow = _read(".claude/flows/onboarding.md")
+    calendar_step = flow.split("## Calendar First (Before Step 1)", 1)[1].split(
+        "## Step 1:", 1
+    )[0]
+
+    assert (
+        'DEX_VAULT="$PWD" node core/integrations/connection-manager/connect.cjs '
+        "connect google --scopes calendar.readonly"
+    ) in calendar_step
+
+
 def test_onboarding_keeps_conservative_identity_fallbacks() -> None:
     flow = _read(".claude/flows/onboarding.md")
     calendar_step = flow.split("## Calendar First (Before Step 1)", 1)[1].split(
