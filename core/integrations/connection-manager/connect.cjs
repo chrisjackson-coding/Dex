@@ -82,7 +82,12 @@ async function cmdConnect(
   }
   // Multi-account: `--as <alias>` connects a second account (provider:alias); bare = the default.
   const { connId, alias } = store.parseConnectionId(flags.as ? `${provider}:${flags.as}` : provider);
-  const app = store.getOAuthApp(provider); // OAuth app is shared across a provider's accounts
+  const app = store.getOAuthApp(provider)
+    // A public desktop client is intentionally not stored in the user's vault:
+    // it has no secret and is part of Dex's released configuration.
+    || (providerConfig.publicClientId
+      ? { clientId: providerConfig.publicClientId, clientSecret: '' }
+      : null);
   if (!app || !app.clientId) {
     // Dex must never prompt an end user to create an OAuth app or paste a client
     // secret into chat.  A managed OAuth client has to be supplied by Dex's
@@ -95,7 +100,10 @@ async function cmdConnect(
     error.code = 'DEX_CM_OAUTH_APP_UNCONFIGURED';
     throw error;
   }
-  const scopes = catalog.normalizeScopes(provider, flags.scopes ? flags.scopes.split(',') : []);
+  const requestedScopes = flags.scopes
+    ? flags.scopes.split(',')
+    : providerConfig.defaultScopes || [];
+  const scopes = catalog.normalizeScopes(provider, requestedScopes);
 
   const cb = await oauthProvider.startCallbackServer();
   const { url, codeVerifier, state } = oauthProvider.buildAuthorizationUrl(providerConfig, {
@@ -554,9 +562,15 @@ function cmdCoverage() {
 }
 
 function cmdAuthUrl(provider, flags) {
-  const app = store.getOAuthApp(provider) || { clientId: 'YOUR_CLIENT_ID' };
-  const scopes = catalog.normalizeScopes(provider, flags.scopes ? flags.scopes.split(',') : []);
   const providerConfig = catalog.getProviderConfig(provider);
+  const app = store.getOAuthApp(provider)
+    || (providerConfig.publicClientId
+      ? { clientId: providerConfig.publicClientId }
+      : { clientId: 'YOUR_CLIENT_ID' });
+  const requestedScopes = flags.scopes
+    ? flags.scopes.split(',')
+    : providerConfig.defaultScopes || [];
+  const scopes = catalog.normalizeScopes(provider, requestedScopes);
   if (!providerConfig.supported) throw new Error(`'${provider}' is browse-only: ${providerConfig.reason}`);
   const { url, state, codeVerifier } = oauth.buildAuthorizationUrl(providerConfig, {
     clientId: app.clientId,

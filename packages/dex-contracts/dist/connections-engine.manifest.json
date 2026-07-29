@@ -11,8 +11,8 @@
         "connection-manager"
       ],
       "fileCount": 21,
-      "totalBytes": 241015,
-      "treeHash": "3c3377927d830860d1411c4873ec08a19194509bdb97c3e7995805cbc2ee69ac",
+      "totalBytes": 241664,
+      "treeHash": "a6de8396dc37fe681552bbbb549ea545fbe1f582471e5cc77a46764bf1291f49",
       "files": [
         {
           "path": "auth-context.cjs",
@@ -31,13 +31,13 @@
         },
         {
           "path": "catalog.cjs",
-          "bytes": 21269,
-          "sha256": "7192f972cedcbe556e829c9b51cf25125853cb7aa46263a6213770584a365dda"
+          "bytes": 21437,
+          "sha256": "815c5dec118b32d94ed7bf4d6b602b399144e2b6d50e2e073fda33d6904968b5"
         },
         {
           "path": "connect.cjs",
-          "bytes": 29752,
-          "sha256": "05e2f354b7e00ed0c4798c269ddb8e0921444e403e8c8ec78249583be1a1a172"
+          "bytes": 30233,
+          "sha256": "84cdeb65e3f04942c3309f92532f7f1fb406b21f03a2c48ba6c90593d557ee42"
         },
         {
           "path": "contract.cjs",

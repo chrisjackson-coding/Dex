@@ -121,6 +121,44 @@ def get_default_work_calendar() -> str:
 DEFAULT_WORK_CALENDAR = get_default_work_calendar()
 logger.info(f"Default work calendar: {DEFAULT_WORK_CALENDAR}")
 
+
+def _selected_calendar_provider() -> str:
+    """Read the explicitly saved calendar source; old profiles remain Apple."""
+    try:
+        import yaml
+
+        if USER_PROFILE_PATH.exists():
+            profile = yaml.safe_load(USER_PROFILE_PATH.read_text(encoding="utf-8")) or {}
+            provider = profile.get("calendar", {}).get("provider")
+            if provider in {"apple", "google", "none"}:
+                return provider
+    except Exception as error:
+        logger.warning(f"Could not read calendar source from profile: {error}")
+    return "apple"
+
+
+def _get_google_calendar_reader():
+    """Load the read-only Google boundary only when it is selected."""
+    from core.integrations.google import calendar as google_calendar
+
+    return google_calendar
+
+
+def _calendar_not_connected_payload() -> dict:
+    return feature_status(
+        CALENDAR_FEATURE,
+        "off",
+        "No calendar is connected. Connect Apple Calendar or Google Calendar when you want Dex to use your schedule.",
+    )
+
+
+def _google_read_only_payload() -> dict:
+    return feature_status(
+        "Google calendar changes",
+        "off",
+        "Dex can read this Google calendar, but it cannot change events because Google access is read-only.",
+    )
+
 # Custom JSON encoder for handling date/datetime objects
 class DateTimeEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -646,14 +684,30 @@ async def _handle_call_tool_inner(
     """Inner tool handler — wrapped by handle_call_tool for health reporting."""
 
     arguments = arguments or {}
+    provider = _selected_calendar_provider() if name.startswith("calendar_") else "apple"
 
     if name == "calendar_list_calendars":
+        if provider == "none":
+            return [types.TextContent(type="text", text=json.dumps(_calendar_not_connected_payload(), indent=2))]
+        if provider == "google":
+            result = _get_google_calendar_reader().list_calendars()
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         result = _get_calendar_list_result()
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
     
     elif name == "calendar_get_events":
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         start_date = arguments.get("start_date", _tz_now().strftime("%Y-%m-%d"))
+
+        if provider == "none":
+            return [types.TextContent(type="text", text=json.dumps(_calendar_not_connected_payload(), indent=2))]
+        if provider == "google":
+            result = _get_google_calendar_reader().get_events(
+                start_date=start_date,
+                end_date=arguments.get("end_date"),
+                calendar_id=calendar_name,
+            )
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2, cls=DateTimeEncoder))]
         
         # Parse start date
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -724,6 +778,10 @@ async def _handle_call_tool_inner(
         return await handle_call_tool("calendar_get_events", arguments)
     
     elif name == "calendar_create_event":
+        if provider == "none":
+            return [types.TextContent(type="text", text=json.dumps(_calendar_not_connected_payload(), indent=2))]
+        if provider == "google":
+            return [types.TextContent(type="text", text=json.dumps(_google_read_only_payload(), indent=2))]
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         title = arguments["title"]
         start_str = arguments["start_datetime"]
@@ -772,6 +830,24 @@ async def _handle_call_tool_inner(
         query = arguments["query"]
         days_back = arguments.get("days_back", 30)
         days_forward = arguments.get("days_forward", 30)
+
+        if provider == "none":
+            return [types.TextContent(type="text", text=json.dumps(_calendar_not_connected_payload(), indent=2))]
+        if provider == "google":
+            start = (_tz_today() - timedelta(days=days_back)).isoformat()
+            end = (_tz_today() + timedelta(days=days_forward + 1)).isoformat()
+            result = _get_google_calendar_reader().get_events(
+                start_date=start, end_date=end, calendar_id=calendar_name,
+            )
+            if result.get("success"):
+                needle = query.casefold()
+                result["events"] = [
+                    event for event in result.get("events", [])
+                    if needle in str(event.get("title", "")).casefold()
+                ]
+                result["count"] = len(result["events"])
+                result["query"] = query
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         
         # Use fast EventKit search
         success, output = run_shell_script(
@@ -806,6 +882,10 @@ async def _handle_call_tool_inner(
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
     
     elif name == "calendar_delete_event":
+        if provider == "none":
+            return [types.TextContent(type="text", text=json.dumps(_calendar_not_connected_payload(), indent=2))]
+        if provider == "google":
+            return [types.TextContent(type="text", text=json.dumps(_google_read_only_payload(), indent=2))]
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         title = arguments["title"]
         event_date = arguments["event_date"]
@@ -840,6 +920,24 @@ async def _handle_call_tool_inner(
     
     elif name == "calendar_get_next_event":
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
+
+        if provider == "none":
+            return [types.TextContent(type="text", text=json.dumps(_calendar_not_connected_payload(), indent=2))]
+        if provider == "google":
+            result = _get_google_calendar_reader().get_events(
+                start_date=_tz_today().isoformat(),
+                end_date=(_tz_today() + timedelta(days=14)).isoformat(),
+                calendar_id=calendar_name,
+            )
+            if result.get("success"):
+                next_event = next(
+                    (event for event in result.get("events", []) if not event.get("all_day")),
+                    None,
+                )
+                result = {"success": True, "next_event": next_event}
+                if next_event is None:
+                    result["message"] = "No upcoming events found."
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         
         # Use fast EventKit
         success, output = run_shell_script("calendar_eventkit.py", "next", calendar_name)
@@ -875,6 +973,24 @@ async def _handle_call_tool_inner(
     elif name == "calendar_get_events_with_attendees":
         calendar_name = arguments.get("calendar_name", DEFAULT_WORK_CALENDAR)
         start_date = arguments.get("start_date", _tz_now().strftime("%Y-%m-%d"))
+
+        if provider == "none":
+            return [types.TextContent(type="text", text=json.dumps(_calendar_not_connected_payload(), indent=2))]
+        if provider == "google":
+            result = _get_google_calendar_reader().get_events(
+                start_date=start_date,
+                end_date=arguments.get("end_date"),
+                calendar_id=calendar_name,
+                with_attendees=True,
+            )
+            if result.get("success"):
+                for event in result.get("events", []):
+                    for attendee in event.get("attendees", []):
+                        person_page = find_person_page(attendee.get("name", ""), attendee.get("email", ""))
+                        attendee["has_person_page"] = person_page is not None
+                        if person_page:
+                            attendee["person_page"] = str(person_page.relative_to(VAULT_PATH))
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2, cls=DateTimeEncoder))]
         
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         if "end_date" in arguments:

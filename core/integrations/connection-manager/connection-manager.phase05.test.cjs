@@ -107,6 +107,44 @@ test('catalog source is UTF-8 text with no NUL sentinel and template fallback be
   );
 });
 
+test('Google uses Dex public Desktop configuration with PKCE and no user-stored OAuth app', async () => {
+  const connId = 'google:public-desktop-test';
+  const expectedClientId = '346294059140-tu2db7foakcg7aue0j1e96qlhd0iu8ta.apps.googleusercontent.com';
+  const received = {};
+  assert.equal(store.getOAuthApp('google'), null, 'the public client must not be saved in the vault');
+  try {
+    await cli.cmdConnect('google', { as: 'public-desktop-test' }, {
+      oauthProvider: {
+        async startCallbackServer() {
+          return {
+            redirectUri: 'http://127.0.0.1:3847/callback',
+            waitForCode: async () => ({ code: 'TEST-CODE' }),
+          };
+        },
+        buildAuthorizationUrl(config, request) {
+          received.authorization = { config, request };
+          return { url: 'https://accounts.google.com/test', codeVerifier: 'VERIFIER', state: 'STATE' };
+        },
+        async exchangeCodeForToken(_config, request) {
+          received.exchange = request;
+          return { access_token: 'PUBLIC-CLIENT-TOKEN', refresh_token: 'PUBLIC-CLIENT-REFRESH' };
+        },
+      },
+      openBrowser: () => {},
+      presenceProvider: { available: false },
+    });
+
+    assert.equal(received.authorization.request.clientId, expectedClientId);
+    assert.equal(received.authorization.config.usePkce, true);
+    assert.deepEqual(received.authorization.request.scopes, ['https://www.googleapis.com/auth/calendar.readonly']);
+    assert.equal(received.exchange.clientId, expectedClientId);
+    assert.equal(received.exchange.clientSecret, '');
+    assert.equal(store.getOAuthApp('google'), null);
+  } finally {
+    if (store.getConnection(connId)) store.deleteToken(connId);
+  }
+});
+
 test('refresh --force hits the token endpoint for a fresh token; default refresh does not', async () => {
   const { fetch, requests } = tokenEndpointMock();
   const originalFetch = global.fetch;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,54 @@ from core.mcp import calendar_server
 
 def _decode_tool_result(result):
     return json.loads(result[0].text)
+
+
+def test_google_calendar_uses_the_selected_read_only_provider(tmp_path, monkeypatch):
+    profile = tmp_path / "System" / "user-profile.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        "calendar:\n  provider: google\n  work_calendar: calendar-id@example.com\n",
+        encoding="utf-8",
+    )
+    requested = {}
+
+    def get_events(**kwargs):
+        requested.update(kwargs)
+        return {
+            "success": True,
+            "calendar": kwargs["calendar_id"],
+            "events": [{"title": "Google planning", "start": "2026-07-29T09:00:00+00:00"}],
+            "count": 1,
+        }
+
+    monkeypatch.setattr(calendar_server, "USER_PROFILE_PATH", profile)
+    monkeypatch.setattr(
+        calendar_server,
+        "_get_google_calendar_reader",
+        lambda: SimpleNamespace(get_events=get_events, list_calendars=lambda: {"success": True, "calendars": []}),
+    )
+    monkeypatch.setattr(
+        calendar_server,
+        "run_shell_script",
+        lambda *_args: pytest.fail("Google must not fall back to Apple Calendar"),
+    )
+
+    payload = _decode_tool_result(
+        asyncio.run(
+            calendar_server._handle_call_tool_inner(
+                "calendar_get_events",
+                {"start_date": "2026-07-29", "calendar_name": "calendar-id@example.com"},
+            )
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["events"][0]["title"] == "Google planning"
+    assert requested == {
+        "start_date": "2026-07-29",
+        "end_date": None,
+        "calendar_id": "calendar-id@example.com",
+    }
 
 
 def test_add_missing_calendar_warning_reports_available_calendars(monkeypatch):

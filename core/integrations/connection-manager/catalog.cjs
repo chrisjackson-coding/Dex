@@ -99,9 +99,12 @@ const KEY_PROVIDER_OVERRIDES = {
 // which is unreliable across the personal + work-account audience on the /common endpoint.
 const OAUTH_PROVIDER_OVERRIDES = {
   // google: Nango ships empty default_scopes, and Google hard-fails authorization
-  // requests with no scope. Dex deliberately defaults to least-privilege Calendar
-  // read-only instead of the broad catalogScopes map; --scopes remains the explicit override.
+  // requests with no scope. This is a public Desktop client: installed software
+  // cannot keep a secret, so PKCE protects the authorization-code exchange.
+  // Keep this identifier (not a secret) with the product configuration.
   google: {
+    publicClientId: '346294059140-tu2db7foakcg7aue0j1e96qlhd0iu8ta.apps.googleusercontent.com',
+    usePkce: true,
     defaultScopes: [
       'https://www.googleapis.com/auth/calendar.readonly',
     ],
