@@ -130,6 +130,9 @@ def test_fresh_git_install_routes_bounded_migration_through_auto_then_resume(tmp
     assert "Separating the Dex brain from your vault" in result.stdout
     assert "separate Git histories" in result.stdout
     assert "Dex installation complete" in result.stdout
+    assert "Start a new Claude Code or Cursor chat in this folder" in result.stdout
+    assert "a new chat loads Dex's MCP servers" in result.stdout
+    assert "In Cursor chat" not in result.stdout
 
 
 def test_synced_folder_install_carries_explicit_override_into_resume(tmp_path: Path) -> None:

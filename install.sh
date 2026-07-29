@@ -324,7 +324,9 @@ if [[ "$WORK_MCP_STATUS" == *"Needs"* ]]; then
 fi
 echo ""
 echo "Next steps:"
-echo "  1. In Cursor chat, type: /setup"
-echo "  2. Answer the setup questions (~5 minutes)"
-echo "  3. Start using Dex!"
+echo "  1. Start a new Claude Code or Cursor chat in this folder"
+echo "     (a new chat loads Dex's MCP servers)"
+echo "  2. Type: /setup"
+echo "  3. Answer the setup questions (~5 minutes)"
+echo "  4. Start using Dex!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
