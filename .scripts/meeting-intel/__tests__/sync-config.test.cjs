@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { getMeetingProcessingMode } = require('../lib/config.cjs');
+const { getMeetingProcessingMode, getMeetingBackfillDays } = require('../lib/config.cjs');
 const { getGranolaApiKey } = require('../lib/granola-api-key.cjs');
 
 test('meeting processing mode accepts the canonical object shape', () => {
@@ -18,10 +18,18 @@ test('meeting processing mode accepts the legacy string shape', () => {
   assert.equal(getMeetingProcessingMode('automatic'), 'automatic');
 });
 
-test('meeting processing mode defaults malformed or missing values to automatic', () => {
-  assert.equal(getMeetingProcessingMode(), 'automatic');
-  assert.equal(getMeetingProcessingMode({}), 'automatic');
-  assert.equal(getMeetingProcessingMode(42), 'automatic');
+test('meeting processing mode defaults malformed or missing values to manual', () => {
+  assert.equal(getMeetingProcessingMode(), 'manual');
+  assert.equal(getMeetingProcessingMode({}), 'manual');
+  assert.equal(getMeetingProcessingMode(42), 'manual');
+});
+
+test('meeting backfill accepts only the three explicit onboarding choices', () => {
+  assert.equal(getMeetingBackfillDays({ backfill_days: 7 }), 7);
+  assert.equal(getMeetingBackfillDays({ backfill_days: 14 }), 14);
+  assert.equal(getMeetingBackfillDays({ backfill_days: 30 }), 30);
+  assert.equal(getMeetingBackfillDays({ backfill_days: 21 }), 14);
+  assert.equal(getMeetingBackfillDays(), 14);
 });
 
 test('Granola API key uses environment before the vault .env file', t => {

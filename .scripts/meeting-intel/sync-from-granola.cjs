@@ -8,9 +8,10 @@
  * granola-crypto, or any spoofed desktop-app headers. Everything comes
  * from https://public-api.granola.ai authenticated with a Bearer key.
  *
- * Processes new meetings with the LLM and generates structured meeting notes.
+ * Syncs new meetings into a queue for an active Dex session to interpret.
  * Designed to run automatically via macOS Launch Agent every 30 minutes.
- * No Cursor or Claude required - fully autonomous.
+ * It never invokes an LLM: a Claude subscription is for the user’s active
+ * session, not an unattended background service.
  *
  * Auth:
  *   - Reads GRANOLA_API_KEY from process.env, then from a .env file at the
@@ -43,7 +44,10 @@ const {
   requeueDeadLetters,
 } = require('../lib/entity-engine-client.cjs');
 const { resolveDexPythonStatus } = require('../lib/dex-python.cjs');
-const { getMeetingProcessingMode } = require('./lib/config.cjs');
+const {
+  getMeetingProcessingMode,
+  getMeetingBackfillDays,
+} = require('./lib/config.cjs');
 const { getGranolaApiKey: readGranolaApiKey } = require('./lib/granola-api-key.cjs');
 const {
   extractAttendees,
@@ -55,9 +59,7 @@ const { processEntityCreation } = require('./lib/entity-creation.cjs');
 const {
   retryEntityPhases,
 } = require('./lib/entity-phase.cjs');
-const { gardenEntities } = require('./lib/gardener.cjs');
 const { verifyEntities } = require('./verify-entities.cjs');
-const { generateContent, isConfigured } = require('../lib/llm-client.cjs');
 
 // ============================================================================
 // CONFIGURATION
@@ -96,21 +98,25 @@ const PROFILE_FILE = path.join(VAULT_ROOT, 'System', 'user-profile.yaml');
 
 // Minimum content length to consider a meeting worth processing
 const MIN_NOTES_LENGTH = 50;
-// Bound sync recovery so ordinary runs retain today's seven-day window while
-// delayed runs overlap the previous successful sync by one day.
-const DEFAULT_LOOKBACK_DAYS = 7;
+// Use the chosen 7/14/30-day window only for the first/recovery fetch. Later
+// runs fetch the recent delta with a one-day overlap.
+const DEFAULT_LOOKBACK_DAYS = 14;
 const MAX_LOOKBACK_DAYS = 30;
+const DETAIL_FETCH_CONCURRENCY = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function deriveLookbackDays(state, now = new Date()) {
-  if (!state?.lastSync) return DEFAULT_LOOKBACK_DAYS;
+function deriveLookbackDays(state, now = new Date(), initialLookbackDays = DEFAULT_LOOKBACK_DAYS) {
+  const selectedLookback = [7, 14, 30].includes(Number(initialLookbackDays))
+    ? Number(initialLookbackDays)
+    : DEFAULT_LOOKBACK_DAYS;
+  if (!state?.lastSync) return selectedLookback;
   const lastSync = new Date(state.lastSync);
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(lastSync.getTime()) || Number.isNaN(current.getTime())) {
-    return DEFAULT_LOOKBACK_DAYS;
+    return selectedLookback;
   }
   const elapsedDays = Math.max(0, Math.ceil((current.getTime() - lastSync.getTime()) / DAY_MS));
-  return Math.min(MAX_LOOKBACK_DAYS, Math.max(DEFAULT_LOOKBACK_DAYS, elapsedDays + 1));
+  return Math.min(MAX_LOOKBACK_DAYS, Math.max(1, elapsedDays + 1));
 }
 
 // ============================================================================
@@ -154,8 +160,8 @@ function loadUserProfile() {
     role: 'Professional',
     company: '',
     meeting_processing: {
-      mode: 'automatic',
-      api_provider: 'gemini'
+      mode: 'manual',
+      backfill_days: DEFAULT_LOOKBACK_DAYS,
     },
     meeting_intelligence: {
       extract_customer_intel: true,
@@ -435,19 +441,45 @@ async function fetchMeetingDetail(apiKey, noteId, profile = {}) {
 }
 
 /**
+ * Run independent, read-only operations with a small fixed concurrency cap.
+ * Results remain in input order so all later queue writes are deterministic.
+ */
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, Number(limit) || 1), items.length);
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+/**
  * Build the list of NEW meetings (full detail) from the official API.
  *
  * 1. List notes within the lookback window (cursor-paged).
  * 2. Filter to notes not already processed (unless forcing today's meetings)
  *    and within the lookback cutoff.
- * 3. Fetch per-note detail (summary + attendees + transcript) sequentially.
+ * 3. Fetch per-note detail (summary + attendees + transcript) with a bounded
+ *    read-only concurrency of three requests.
  * 4. Keep notes that have meaningful content (notes OR transcript).
  *
  * Returns an array of meeting objects (possibly empty), or null if the API
  * was unavailable / auth was rejected so the caller can exit cleanly.
  */
 async function getNewMeetingsFromApi(apiKey, state, forceToday = false, profile = {}) {
-  const lookbackDays = deriveLookbackDays(state);
+  const lookbackDays = deriveLookbackDays(
+    state,
+    new Date(),
+    getMeetingBackfillDays(profile.meeting_processing),
+  );
   const listed = await listGranolaNotes(apiKey, lookbackDays);
   if (listed === null) return null; // auth/network failure already logged
 
@@ -477,22 +509,17 @@ async function getNewMeetingsFromApi(apiKey, state, forceToday = false, profile 
 
   log(`  ${toFetch.length} new note(s) need detail fetches`);
 
-  const newMeetings = [];
-  for (const note of toFetch) {
-    const meeting = await fetchMeetingDetail(apiKey, note.id, profile);
-    if (meeting && meeting.authFailed) return null; // 401 mid-run — abort cleanly
-    if (!meeting) continue;
+  const details = await mapWithConcurrency(
+    toFetch,
+    DETAIL_FETCH_CONCURRENCY,
+    note => fetchMeetingDetail(apiKey, note.id, profile),
+  );
+  if (details.some(meeting => meeting?.authFailed)) return null;
 
-    // Keep if either notes or transcript carry meaningful content.
-    if (meeting.notes.length < MIN_NOTES_LENGTH && meeting.transcript.length < MIN_NOTES_LENGTH) {
-      continue;
-    }
-
-    newMeetings.push(meeting);
-
-    // Gentle, sequential detail fetches (rate limits undocumented).
-    await new Promise(r => setTimeout(r, 250));
-  }
+  const newMeetings = details.filter(meeting => (
+    meeting
+    && (meeting.notes.length >= MIN_NOTES_LENGTH || meeting.transcript.length >= MIN_NOTES_LENGTH)
+  ));
 
   newMeetings.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   return newMeetings;
@@ -597,32 +624,6 @@ Rationale: [One sentence explaining why this pillar fits]
 ---
 
 Be concise but thorough. Extract real insights, not generic summaries. If something isn't clear from the content, say so rather than making things up.`;
-}
-
-// ============================================================================
-// LLM ANALYSIS
-// ============================================================================
-
-async function analyzeWithLLM(meeting, profile, pillars) {
-  const { generateContent, isConfigured, getActiveProvider } = require('../lib/llm-client.cjs');
-
-  if (!isConfigured()) {
-    throw new Error('No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY in .env');
-  }
-
-  const prompt = buildAnalysisPrompt(meeting, profile, pillars);
-  const provider = getActiveProvider();
-
-  try {
-    log(`Analyzing ${meeting.title} with ${provider}...`);
-    const response = await generateContent(prompt, {
-      maxOutputTokens: 3000
-    });
-    return response;
-  } catch (err) {
-    log(`LLM analysis failed for ${meeting.title}: ${err.message}`);
-    throw err;
-  }
 }
 
 function buildMeetingContent(meeting) {
@@ -828,7 +829,7 @@ ${meeting.transcript.slice(0, 5000)}${meeting.transcript.length > 5000 ? '\n\n[T
 }
 
 // ============================================================================
-// BASIC NOTE (no LLM — fallback for automatic mode when API key not configured)
+// BASIC NOTE (used only by an active session when it intentionally needs a raw note)
 // ============================================================================
 
 function createBasicMeetingNote(meeting, profile, options = {}) {
@@ -881,7 +882,7 @@ ${notesSection}
 ${transcriptSection}
 
 ---
-*Auto-synced by Dex. Run \`/process-meetings\` to add AI analysis, or add an LLM API key to \`.env\` for background analysis.*
+*Synced by Dex. Run \`/process-meetings\` in an active Dex session to analyse and organise this meeting.*
 `;
 
   fs.writeFileSync(filepath, content);
@@ -1005,16 +1006,10 @@ function runEntityVerification() {
   }
 }
 
-async function runEntityGardener(profile) {
-  if (!isConfigured()
-      || profile.entity_gardener?.enabled === false
-      || profile.meeting_processing?.mode !== 'automatic') return;
-  try {
-    const result = await gardenEntities({ generate: generateContent, limit: 5, log });
-    log(`Gardener: ${result.gardened.length} maintained, ${result.preserved} user-owned summaries, ${result.errors.length} errors`);
-  } catch (error) {
-    log(`Entity gardener skipped after error: ${error.message}`);
-  }
+async function runEntityGardener() {
+  // Never call an LLM from launchd. A session can offer this work when the
+  // user is present and has opted in.
+  return { skipped: 'active-session-only' };
 }
 
 function refreshEntityCoolingFeed(vaultRoot = VAULT_ROOT, {
@@ -1129,14 +1124,6 @@ async function main() {
   const apiKey = getGranolaApiKey();
   if (!apiKey) {
     log('Granola not connected — run /granola-setup to add your Granola API key (requires a Granola Business plan).');
-    if (!dryRun) {
-      const profile = loadUserProfile();
-      const state = loadState();
-      retryPendingEntityWork(state, profile);
-      runEntityVerification();
-      refreshEntityCoolingFeed();
-      refreshEntityRelationshipsFeed();
-    }
     return; // clean exit (exit 0 via the runner)
   }
 
@@ -1161,13 +1148,6 @@ async function main() {
   if (newMeetings === null) {
     // Auth rejected or network failure — already logged a friendly reason.
     log('Could not reach the Granola API this run. Exiting cleanly.');
-    if (!dryRun) {
-      retryPendingEntityWork(state, profile);
-      runEntityVerification();
-      await runEntityGardener(profile);
-      refreshEntityCoolingFeed();
-      refreshEntityRelationshipsFeed();
-    }
     return;
   }
 
@@ -1175,14 +1155,7 @@ async function main() {
 
   if (newMeetings.length === 0) {
     log('Nothing to process. Exiting.');
-    retryPendingEntityWork(state, profile);
     saveState(state);
-    if (!dryRun) {
-      runEntityVerification();
-      await runEntityGardener(profile);
-      refreshEntityCoolingFeed();
-      refreshEntityRelationshipsFeed();
-    }
     return;
   }
 
@@ -1198,117 +1171,23 @@ async function main() {
     return;
   }
 
-  // Determine processing mode
-  // "automatic" = write meeting notes now (default for new users)
-  // "manual"    = queue JSON files for /process-meetings command
+  // The scheduler only discovers and queues. Legacy `automatic` profiles are
+  // intentionally treated the same way: Dex must not spend a subscription or
+  // API credit unattended.
   const processingMode = getMeetingProcessingMode(profile.meeting_processing);
-  log(`\nProcessing mode: ${processingMode}`);
-
-  if (processingMode === 'manual') {
-    // Queue mode — write JSON files, user runs /process-meetings to analyse
-    log(`Queuing ${newMeetings.length} meeting(s) for manual processing...`);
-    for (const meeting of newMeetings) {
-      log(`\nQueuing: ${meeting.title}`);
-      queueMeetingAsJson(meeting, state);
-    }
-    retryPendingEntityWork(state, profile);
-    saveState(state);
-    runEntityVerification();
-    refreshEntityCoolingFeed();
-    refreshEntityRelationshipsFeed();
-    log('\n' + '='.repeat(60));
-    log(`SYNC COMPLETE (source: ${dataSource})`);
-    log(`Queued: ${newMeetings.length} meetings`);
-    log('Run /process-meetings in your Dex session to analyse them.');
-    log('='.repeat(60));
-    return;
-  }
-
-  // Automatic mode — process and write notes immediately
-  const processedResults = [];
-
+  log(`\nProcessing preference: ${processingMode} (scheduled sync always queues for an active session)`);
+  log(`Queuing ${newMeetings.length} meeting(s) for session processing...`);
   for (const meeting of newMeetings) {
-    log(`\nProcessing: ${meeting.title}`);
-    log(`  Date: ${meeting.createdAt.split('T')[0]}`);
-    log(`  Source: ${meeting.source || dataSource}`);
-    log(`  Participants: ${meeting.participants.join(', ') || 'Unknown'}`);
-
-    let result;
-
-    try {
-      // Try LLM analysis first
-      log('  Calling LLM for analysis...');
-      const analysis = await analyzeWithLLM(meeting, profile, pillars);
-      log('  Creating meeting note with AI analysis...');
-      result = createMeetingNote(meeting, analysis, profile, pillars);
-    } catch (err) {
-      if (err.message.includes('No LLM API key') || err.message.includes('not configured')) {
-        // No LLM configured — create a basic structured note instead
-        log(`  No LLM available — creating basic note (add ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY to .env for background analysis)`);
-        result = createBasicMeetingNote(meeting, profile);
-      } else {
-        log(`  Failed: ${err.message}`);
-        continue;
-      }
-    }
-
-    // Mark as processed
-    state.processedMeetings[meeting.id] = {
-      title: meeting.title,
-      processedAt: new Date().toISOString(),
-      filepath: result.filepath,
-      source: meeting.source || dataSource,
-      entity_phase: 'pending',
-      entity_payload: {
-        id: meeting.id,
-        createdAt: meeting.createdAt,
-        hasTranscript: Boolean(meeting.transcript && String(meeting.transcript).trim()),
-        filteredAttendees: getOwnerFilteredAttendees(meeting, profile),
-      },
-    };
-
-    processedResults.push({ meeting, ...result });
-    log(`  Done: ${result.wikilink}`);
-
-    // Small delay between LLM calls
-    await new Promise(r => setTimeout(r, 500));
+    log(`\nQueuing: ${meeting.title}`);
+    queueMeetingAsJson(meeting, state);
   }
-
-  // Save state
   saveState(state);
-
-  // Update queue log
-  if (processedResults.length > 0) {
-    log('\nUpdating queue log...');
-    updateQueue(processedResults);
-    log('\nRunning post-processing...');
-    runPostProcessing();
-    if (profile.obsidian_mode) {
-      try {
-        const linked = autoLinkFiles(
-          processedResults.map(result => result.filepath),
-          { profile, vaultRoot: VAULT_ROOT },
-        );
-        log(`Auto-linked people in ${linked.changed} meeting note(s)`);
-      } catch (error) {
-        log(`Auto-link skipped after error: ${error.message}`);
-      }
-    }
-
-    retryPendingEntityWork(state, profile);
-    saveState(state);
-  }
-
-  runEntityVerification();
-  await runEntityGardener(profile);
-  refreshEntityCoolingFeed();
-  refreshEntityRelationshipsFeed();
 
   // Summary
   log('\n' + '='.repeat(60));
   log(`SYNC COMPLETE (source: ${dataSource})`);
-  log(`Processed: ${processedResults.length} meetings`);
-  log(`Failed: ${newMeetings.length - processedResults.length}`);
+  log(`Queued: ${newMeetings.length} meetings`);
+  log('Run /process-meetings in an active Dex session to analyse them.');
   log('='.repeat(60));
 }
 
@@ -1333,6 +1212,10 @@ module.exports = {
   createMeetingNote,
   resolveMeetingNoteTarget,
   getMeetingProcessingMode,
+  getMeetingBackfillDays,
+  mapWithConcurrency,
+  DEFAULT_LOOKBACK_DAYS,
+  DETAIL_FETCH_CONCURRENCY,
   renderAttendeesYamlBlock,
   renderParticipants,
   refreshEntityCoolingFeed,

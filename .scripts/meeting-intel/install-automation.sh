@@ -118,10 +118,6 @@ if [ -z "$NODE_PATH" ]; then
 fi
 echo -e "${GREEN}✓${NC} Node.js found at: $NODE_PATH"
 
-if [ ! -f "$VAULT_PATH/.env" ]; then
-    echo -e "${YELLOW}!${NC} Warning: .env file not found. Make sure GEMINI_API_KEY (or another LLM key) is set."
-fi
-
 # Check the same authentication source the sync worker uses.
 if has_granola_api_key; then
     echo -e "${GREEN}✓${NC} Granola API key found"
@@ -188,7 +184,7 @@ echo "What happens now:"
 echo "  • Meetings sync automatically every 30 minutes"
 echo "  • Syncs via Granola's official API (includes mobile recordings)"
 echo "  • Also syncs when you log in or wake your laptop"
-echo "  • /process-meetings now reads synced files (no terminal output)"
+echo "  • New meetings are queued; Dex asks before processing them in an active session"
 echo ""
 echo "Commands:"
 echo "  ./install-automation.sh --status    Check if running"

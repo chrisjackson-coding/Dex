@@ -4,10 +4,10 @@ Process meetings from Granola to extract structured insights, action items, and 
 
 ## How It Works
 
-Meetings sync **automatically in the background** every 30 minutes via the official Granola public API.
+Meetings sync **into a queue** every 30 minutes via the official Granola public API. Dex asks before interpreting or filing them in an active session.
 
 ```
-Granola App (desktop + mobile) → Granola Cloud → Official Granola API → Background Sync (every 30 min) → Meeting notes with attendees → Entity creation + verification → /process-meetings → Context updates, Tasks
+Granola App (desktop + mobile) → Granola Cloud → Official Granola API → Background queue (every 30 min) → Active, consented `/process-meetings` session → Context updates, Tasks
 ```
 
 **Key features:** Mobile phone recordings are captured alongside desktop meetings — the official API returns both. Connect once with `/granola-setup` to add your Granola API key; there's no separate per-device setup.
@@ -21,8 +21,8 @@ cd .scripts/meeting-intel && ./install-automation.sh
 ```
 
 This will:
-- Check prerequisites (Node.js, Granola API key, LLM API key)
-- Install the 30-minute background sync via macOS Launch Agent
+- Check prerequisites (Node.js and Granola API key)
+- Install the 30-minute background queue via macOS Launch Agent
 
 ### 2. Connect Granola
 
@@ -31,7 +31,6 @@ Dex talks to the official Granola public API using your own API key. Run `/grano
 **Requirements:**
 - A Granola Business plan (the official API key, format `grn_...`, is created there)
 - Your Granola API key connected via `/granola-setup`
-- An LLM API key in `.env` (GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)
 
 ## Data Sources
 
@@ -46,7 +45,7 @@ There is no local-file fallback — the official Granola API is the single sourc
 After setup, `/process-meetings` reads synced files and updates your vault:
 
 ```
-/process-meetings           # Process all synced meetings (last 7 days)
+/process-meetings           # Process all queued meetings in the selected backfill window
 /process-meetings today     # Just today's meetings
 /process-meetings "Acme"    # Find meetings by title/attendee
 /process-meetings --setup   # Install/check background automation
@@ -55,7 +54,12 @@ After setup, `/process-meetings` reads synced files and updates your vault:
 **Flags:**
 - `--people-only` — Only update person/company pages (skip tasks)
 - `--no-todos` — Create notes but don't extract tasks
-- `--days-back=N` — Override default 7-day lookback
+- `--days-back=N` — Narrow the active-session processing window
+
+During onboarding choose one initial fetch window: **7 days**, **14 days
+(recommended)**, or **30 days**. The longer the window, the longer the first
+fetch and active-session processing may take. Scheduled sync later fetches only
+the recent delta.
 
 **What gets updated:**
 - Meeting notes (00-Inbox/Meetings/) — attendee names, emails when available, and Internal/External location in frontmatter
@@ -70,9 +74,9 @@ People qualify after 2+ meetings across 2+ weeks, or after 2+ meetings where at 
 
 `00-Inbox/Meetings/` is the meeting landing zone. Anything that drops a meeting
 note there — Granola sync, a pasted note, a hand-dropped file, or a future
-service integration — is detected at session start and processed by
-`/process-meetings`. New fetchers should write to this folder rather than add
-their own detection path.
+service integration — is detected at session start and offered for processing
+by `/process-meetings`. New fetchers should write to this folder rather than
+add their own detection path.
 
 A meeting-shaped note is waiting when its date is within seven days, it has no
 `<!-- tasks-extracted: -->` marker, it has no `<!-- dex:skip-processing -->`
@@ -92,11 +96,13 @@ A notice is limited to once every 30 minutes through
 `System/.last-meeting-queue-notice`, and the check stays silent when nothing is
 waiting.
 
-The detector never processes or edits a meeting. `/process-meetings` still owns that work and continues to respect the vault's `entity_creation` setting.
+The detector never processes or edits a meeting. It never starts a hidden
+sub-agent either: `/process-meetings` runs only after the user agrees in the
+active session and continues to respect the vault's `entity_creation` setting.
 
 ## What Gets Extracted
 
-The background sync uses your LLM API to extract:
+An active, user-consented `/process-meetings` session extracts:
 
 - **Summary** (2-3 sentences)
 - **Key discussion points** with context
@@ -176,21 +182,17 @@ node .scripts/meeting-intel/sync-from-granola.cjs --force
                        │ Official API (public-api.granola.ai, structured JSON)
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│ Background Sync (launchd, every 30 min)              │
-│  - sync-from-granola.cjs → API fetch + LLM analysis │
+│ Background Queue (launchd, every 30 min)             │
+│  - sync-from-granola.cjs → API fetch + queue only    │
 │  - Auth: Bearer GRANOLA_API_KEY (via /granola-setup) │
-│  - Writes attendee frontmatter                       │
-│  - Runs entity creation and verification             │
 │  - No local-file fallback                            │
 └──────────────────────┬──────────────────────────────┘
-                       │ LLM extraction (Gemini/Claude/GPT)
+                       │ User consent in an active Dex session
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│ Vault Files                                          │
-│  - 00-Inbox/Meetings/YYYY-MM-DD/slug.md             │
-│  - processed-meetings.json (state)                  │
-│  - System/.dex/contacts.json + verification         │
-│  - Person/company pages or suggestions              │
+│ Queued meetings                                      │
+│  - 00-Inbox/Meetings/queue/*.json                   │
+│  - processed-meetings.json (sync state)             │
 └──────────────────────┬──────────────────────────────┘
                        │ /process-meetings
                        ▼

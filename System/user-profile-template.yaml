@@ -84,11 +84,13 @@ pillars: []
 # Meeting Processing Configuration
 # How Dex processes meetings from Granola
 meeting_processing:
-  # Mode: "automatic" (notes appear in your vault within 30min) or "manual" (run /process-meetings)
-  mode: automatic
-  
-  # API provider for automatic mode: gemini, anthropic, or openai
-  api_provider: gemini
+  # The scheduler fetches and queues meetings. Dex processes them only in an
+  # active, user-consented session; it never uses a subscription unattended.
+  mode: manual
+
+  # Choose 7, 14 (recommended), or 30 days during onboarding. Longer
+  # backfills take longer; later scheduled syncs only fetch the recent delta.
+  backfill_days: 14
 
 # Person-page creation from repeated meeting observations.
 # Options: auto, suggest, off. Fresh setup starts at suggest until the user chooses.

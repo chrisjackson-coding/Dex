@@ -16,23 +16,31 @@ Process meetings that have been synced from Granola by the background automation
 
 ## Background Execution
 
-This skill supports background execution. When invoked:
-1. Acknowledge: "Processing [N] meetings in the background. I'll let you know when done."
-2. Process all meetings
-3. On completion, provide summary: "[N] meetings processed. [X] person pages updated. [Y] action items created."
+This work may use parallel sub-tasks **only while this Dex session is active**.
+Before starting, get a clear yes from the user. A subscription must never be
+used by a hidden scheduled worker or a session-start hook.
+
+When the user agrees:
+1. Say: "I’ll process [N] meetings in this session. I’ll keep you posted."
+2. Read and analyse independent meetings in small, bounded parallel batches.
+3. Apply person, company, task, and note writes in a deterministic order.
+4. On completion, report: "[N] meetings processed. [X] person pages updated. [Y] action items created."
 
 ## How It Works
 
-Meetings are synced automatically every 30 minutes by a background process. This command reads those synced files and:
+Meetings are fetched and queued automatically every 30 minutes by a background
+process. That process does not call an LLM. This command uses the active Dex
+session to read those queued files and:
 - Creates/updates person and company pages
 - Extracts action items to 03-Tasks/Tasks.md
 - Links everything together
 
-**No terminal commands are shown** - the heavy lifting happens in the background.
+Do not show terminal commands to the user unless they ask. Explain that the
+meeting contents are interpreted in this active session, not by a hidden worker.
 
 ## Arguments
 
-- No arguments: Process all unprocessed meetings from the last 7 days
+- No arguments: Process all unprocessed meetings in the selected backfill window
 - `today`: Only process today's meetings
 - `"search term"`: Find meetings by title/attendee
 - `--people-only`: Only update person/company pages (skip tasks)
@@ -59,7 +67,7 @@ ls .scripts/meeting-intel/processed-meetings.json
 **If state file exists:** Background sync is working. Continue to Step 2.
 
 **If state file doesn't exist:**
-> "Background meeting sync isn't set up yet. This runs automatically every 30 minutes so `/process-meetings` doesn't need terminal commands.
+> "Background meeting sync isn't set up yet. It fetches and queues new meetings every 30 minutes; Dex will always ask before interpreting or filing them.
 >
 > **To set up (one-time, takes 30 seconds):**
 > ```bash
@@ -68,9 +76,7 @@ ls .scripts/meeting-intel/processed-meetings.json
 >
 > Or run `/process-meetings --setup` and I'll do it for you.
 >
-> **Requirements:**
-> - A Granola Business plan, with your Granola API key connected via `/granola-setup`
-> - An LLM API key in `.env` (GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)"
+> **Requirement:** A Granola API key connected via `/granola-setup`. No separate OpenAI or Gemini key is required for this session-based workflow."
 
 If user runs `--setup`:
 ```bash
@@ -101,9 +107,22 @@ For each meeting file, skip notes containing `<!-- dex:skip-processing -->`:
 3. Check if tasks need extracting (look for unchecked items in "For Me" section)
 
 Report findings:
-> "Found X waiting meetings from the last 7 days. Y need person page updates, Z have unextracted tasks."
+> "Found X waiting meetings in your selected backfill window. Y need person page updates, Z have unextracted tasks."
 
-### Step 2.5: Consume Queued Meetings (manual mode)
+### Backfill Window
+
+During onboarding, offer exactly these choices before the first sync:
+
+1. **7 days** — a quick recent snapshot
+2. **14 days (recommended)** — enough context for a useful first picture
+3. **30 days** — richer context; takes longer to fetch and process
+
+Store the selected value as `meeting_processing.backfill_days`. The scheduler
+uses it only for the first/recovery fetch; normal 30-minute runs fetch the
+recent delta. Never imply that a longer selection will be processed without the
+user’s consent in an active session.
+
+### Step 2.5: Consume Queued Meetings
 
 If `00-Inbox/Meetings/queue/*.json` files exist, consume each queued meeting
 before continuing:
@@ -332,7 +351,7 @@ If `ENTITY_SUGGESTIONS_FILE` contains suggested people, list them and ask: "Want
 ```
 ## Meeting Processing Complete ✅
 
-**Synced meetings found:** X (last 7 days)
+**Synced meetings found:** X (selected backfill window)
 **Background sync status:** Running (last sync: 10 min ago)
 
 ### Updates Made
@@ -363,7 +382,7 @@ If `ENTITY_SUGGESTIONS_FILE` contains suggested people, list them and ask: "Want
 For MCP responses, follow CLAUDE.md's `feature_status` rendering convention before applying these fallbacks.
 
 **If no meetings found:**
-> "No meetings synced in the last 7 days. Make sure:
+> "No meetings waiting in your selected backfill window. Make sure:
 > 1. Your Granola API key is connected (run `/granola-setup` if not)
 > 2. Background sync is set up (run `/process-meetings --setup`)
 > 3. Check logs: `.scripts/logs/meeting-intel.stdout.log`"

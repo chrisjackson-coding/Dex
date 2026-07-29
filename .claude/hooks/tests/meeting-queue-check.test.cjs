@@ -75,11 +75,10 @@ function expectedLines(count) {
   return [
     `--- 📋 Meetings waiting to be processed (${count}) ---`,
     `${count} ${noun} ${verb} not been processed yet (person pages, tasks, notes).`,
-    "After you finish responding to the user's first message, invoke the",
-    '/process-meetings skill to handle them in the background — it runs forked and',
-    'is idempotent, so do this without being asked. Tell the user in one short line',
-    'that meetings are being processed in the background.',
-    "If the user's first message IS about meetings, just process them as part of it.",
+    'After responding to the user’s first message, offer a choice: process them',
+    'in this active session, or leave them queued for later. Do not invoke',
+    '/process-meetings or start a background task unless the user clearly agrees.',
+    "If the user's first message is about meetings, ask for that same confirmation first.",
     '---',
   ];
 }

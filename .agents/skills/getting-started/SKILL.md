@@ -7,6 +7,41 @@ description: "Interactive post-onboarding tour that adapts to whatever data exis
 
 Transform the post-onboarding experience from "blank chat window" to guided value delivery. Adaptive based on what data sources are available (calendar, Granola, or neither).
 
+## Canonical Meeting Handling (Overrides Earlier Legacy Examples)
+
+The 7/14/30-day choice below is the only historical-meeting strategy supported
+by this skill. Do not use older "smart", "recent", "full", split-range, or
+six-month examples elsewhere in this file as instructions.
+
+1. Tell the user that Granola’s scheduled sync only fetches and queues meetings.
+   It does not use Claude, OpenAI, Gemini, or any other LLM while the user is
+   away.
+2. Ask for explicit consent before inspecting the queued meetings in the active
+   Dex session. Do not create a weekly plan, person/company page, task, or note
+   merely because the session started.
+3. Offer exactly one reviewed backfill window:
+
+   ```text
+   I can build your first meeting picture from:
+   1. 7 days — a quick recent snapshot
+   2. 14 days (recommended) — enough context for a useful first picture
+   3. 30 days — richer context; it will take longer to fetch and process
+   4. Not now
+   ```
+
+   Save the selected number as `meeting_processing.backfill_days`. A normal
+   scheduled run fetches only the recent delta afterwards.
+4. Show the user a preview of meetings and likely outputs. Ask a second,
+   explicit confirmation before any durable writes.
+5. During an active, consented session, read and analyse independent meetings
+   in small bounded parallel batches (maximum 3). Apply all person, company,
+   task, and note writes in one deterministic, serial review order. Surface
+   ambiguity instead of guessing.
+
+Use plain language: "I’ll work through these with you in this session," never
+"I’ll keep working while you’re away." A Claude subscription belongs to that
+active session and must not be used as an unattended background service.
+
 ## When to Run
 
 - Automatically suggested at session start if vault < 7 days old
@@ -43,49 +78,20 @@ else:
 
 **If `run_dramatic_reveal` is True:**
 
-Say: "I can check the sources you connected. I’ll read the selected range and show
-you a draft first; I won’t create plans, pages, or tasks without your approval."
-
-**Execute analysis:**
-1. Call calendar MCP: `calendar_get_events` for the next 7 days 
-2. Call granola MCP: `granola_get_recent_meetings(days_back=7)`
-3. Analyze the data
-
-**Then reveal what you found:**
+Say: "Your workspace is ready. I can give you a useful first picture, but I’ll
+only inspect connected sources or file anything if you want me to."
 
 ```
-**Here's what I found:**
-
-📅 **Your calendar this week:**
-• [X] meetings scheduled
-• [Y] are 1:1s  
-• [Busiest day] is packed ([Z] meetings back-to-back)
-• You're meeting most with: [Person1], [Person2], [Person3]
-
-[If Granola data:]
-📝 **Granola meetings (last 7 days):**
-• [N] meetings captured
-• [M] unique people
-• [K] external companies
-
-**Here is a draft of what Dex sees:**
-• Possible weekly priorities, based on the calendar evidence
-• People whose context may be useful to prepare before a meeting
-• Organisations worth reviewing, where the evidence is sufficient
-
-Nothing has been written yet. I’ll show the evidence and ask before creating a plan,
-page, task, or relationship.
-
-Now, want me to:
-1. Process those [N] Granola meetings (extract action items)?
-2. Create more person pages?
-3. Show you around the system?
-4. You're good - let me explore on my own
-
-What sounds useful?
+Want to start with:
+1. A weekly plan from your calendar
+2. A reviewed 7/14/30-day meeting picture
+3. A short tour
+4. Explore on your own
 ```
 
-**Important:** After showing this, update the marker file to prevent showing it again:
+**Important:** Do not write a plan, page, task, note, or meeting result until
+the user selects an option and confirms the preview. After the choice is shown,
+update the marker only to prevent repeating this welcome prompt:
 ```python
 marker_data['phase2_completed'] = True
 marker_data['phase2_completed_at'] = datetime.now().isoformat()
@@ -106,6 +112,10 @@ Based on results, route to appropriate flow.
 ## Flow A: Has Calendar + Granola
 
 **The "I Already Looked" Flow**
+
+Use **Canonical Meeting Handling** above for every Granola branch in this flow.
+The detailed historic strategies below are retained only as background context;
+they do not authorize an unattended scan or any automatic creation.
 
 ### Pre-Check: Read Marker File
 
@@ -545,7 +555,9 @@ What sounds useful?
 
 ### If Only Granola:
 
-**Same discovery flow as Flow A, but calendar-less:**
+**Use the same Canonical Meeting Handling flow as Flow A, without the calendar
+summary.** Do not perform the older six-month/full-history discovery or create
+anything until the user chooses 7, 14, or 30 days and confirms the preview.
 
 ```
 👋 **Welcome back, [Name]!**
@@ -970,6 +982,11 @@ Different magic for different situations:
 ---
 
 ## Helper: Analyze Granola Data Extent
+
+**Deprecated for onboarding.** Do not invoke this helper in onboarding or
+getting-started. It remains below only as historical reference for maintenance;
+the supported initial windows are 7, 14, and 30 days under Canonical Meeting
+Handling above.
 
 Before presenting choices, discover how much Granola data is available:
 
