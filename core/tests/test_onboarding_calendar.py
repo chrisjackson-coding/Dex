@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from core.mcp import calendar_server, onboarding_server
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _decode_tool_result(result):
@@ -76,6 +81,135 @@ def test_save_calendar_selection_stores_valid_live_calendar(
         "basis": "default",
         "reason": "Dex hasn't worked this out from your calendar.",
     }
+
+
+def test_save_calendar_selection_persists_google_provider_and_calendar_id(
+    onboarding_vault,
+    monkeypatch,
+):
+    reader = SimpleNamespace(
+        list_calendars=lambda: {
+            "success": True,
+            "calendars": [
+                {"title": "Work", "identifier": "dave@dex.ai"},
+                {"title": "Personal", "identifier": "personal@example.com"},
+            ],
+            "count": 2,
+        }
+    )
+    monkeypatch.setattr(
+        calendar_server,
+        "_get_google_calendar_reader",
+        lambda: reader,
+        raising=False,
+    )
+    _start_session()
+
+    result = _call_tool(
+        "save_calendar_selection",
+        {
+            "provider": "google",
+            "work_calendar": "dave@dex.ai",
+            "calendar_count": 99,
+        },
+    )
+
+    assert result["success"] is True
+    assert result["data"]["derived_identity"] == {
+        "name": "Dave",
+        "domain": "dex.ai",
+    }
+    assert onboarding_server.load_session()["data"]["calendar"] == {
+        "provider": "google",
+        "work_calendar": "dave@dex.ai",
+        "calendar_count": 2,
+        "lazy_load": True,
+    }
+
+
+def test_google_calendar_analysis_never_falls_back_to_apple(
+    onboarding_vault,
+    monkeypatch,
+):
+    (onboarding_vault / "System" / "user-profile.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "calendar": {
+                    "provider": "google",
+                    "work_calendar": "dave@dex.ai",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    requested: dict[str, object] = {}
+
+    def get_events(**kwargs):
+        requested.update(kwargs)
+        return {
+            "success": True,
+            "events": [
+                {
+                    "title": "Google meeting",
+                    "start": "2026-07-27T09:00:00+00:00",
+                    "end": "2026-07-27T10:00:00+00:00",
+                }
+            ],
+        }
+
+    module = SimpleNamespace(
+        DEFAULT_WORK_CALENDAR="Apple default must not be used",
+        _get_google_calendar_reader=lambda: SimpleNamespace(get_events=get_events),
+        run_shell_script=lambda *_args: pytest.fail("Google must not query Apple Calendar"),
+    )
+    monkeypatch.setattr(onboarding_server, "_load_calendar_module", lambda _name: module)
+
+    events = onboarding_server.get_calendar_events_for_week()
+
+    assert [event["title"] for event in events] == ["Google meeting"]
+    assert requested["calendar_id"] == "dave@dex.ai"
+    assert requested["with_attendees"] is True
+
+
+def test_finalization_preserves_google_selection_after_session_is_deleted(
+    fixture_vault,
+    tmp_path,
+    monkeypatch,
+):
+    vault = tmp_path / "vault"
+    shutil.copytree(fixture_vault, vault)
+    system = vault / "System"
+    shutil.copy(REPO_ROOT / "System" / ".mcp.json.example", system / ".mcp.json.example")
+    (vault / "core").mkdir()
+    shutil.copy(REPO_ROOT / "core" / "paths.py", vault / "core" / "paths.py")
+    (vault / ".scripts").mkdir()
+    monkeypatch.setattr(onboarding_server, "BASE_DIR", vault)
+    monkeypatch.setattr(onboarding_server, "SESSION_FILE", system / ".onboarding-session.json")
+    session = onboarding_server.create_new_session()
+    session["completed_steps"] = [1, 2, 3, 4, 5, 6, 7]
+    session["data"] = {
+        "name": "Dave",
+        "role": "Founder",
+        "company_size": "startup",
+        "email_domain": "dex.ai",
+        "pillars": ["Build", "Customers"],
+        "communication": {},
+        "working_week": {"days": ["monday", "tuesday"]},
+        "calendar": {
+            "provider": "google",
+            "work_calendar": "dave@dex.ai",
+            "calendar_count": 2,
+            "lazy_load": True,
+        },
+    }
+    assert onboarding_server.save_session(session) is True
+
+    result = _call_tool("finalize_onboarding")
+
+    assert result["success"] is True, result
+    assert not onboarding_server.SESSION_FILE.exists()
+    profile = yaml.safe_load((system / "user-profile.yaml").read_text(encoding="utf-8"))
+    assert profile["calendar"] == session["data"]["calendar"]
 
 
 def test_save_calendar_selection_rejects_name_missing_from_live_calendars(

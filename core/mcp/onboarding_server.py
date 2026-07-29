@@ -364,6 +364,46 @@ def normalize_working_context(value: Any) -> Dict[str, Any]:
     return context
 
 
+CALENDAR_PROVIDERS = {"apple", "google", "none"}
+CALENDAR_DAY_NAMES = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+
+
+def _selected_calendar_provider(calendar_config: Dict[str, Any]) -> str:
+    """Return the persisted provider, preserving Apple behaviour for old profiles."""
+    provider = calendar_config.get("provider")
+    if provider is None:
+        return "apple"
+    if isinstance(provider, str) and provider.casefold() in CALENDAR_PROVIDERS:
+        return provider.casefold()
+    raise RuntimeError("The saved calendar provider is invalid.")
+
+
+def working_week_suggestion_from_events(events: List[Dict]) -> Dict[str, Any]:
+    """Suggest working days only when successful calendar evidence supports it."""
+    observed_days = {
+        _calendar_event_datetime(event.get("start")).strftime("%A").casefold()
+        for event in _timed_calendar_events(events)
+    }
+    days = [day for day in CALENDAR_DAY_NAMES if day in observed_days]
+    if days:
+        return {"days": days, "basis": "calendar"}
+
+    fallback = default_working_week_suggestion()
+    fallback["reason"] = (
+        "Your calendar has no timed meetings this week, so Dex can't infer "
+        "your working days yet."
+    )
+    return fallback
+
+
 def validate_email_domain(domain: str) -> tuple[bool, Optional[str], str]:
     """Validate and normalize email domains separated by commas"""
     if not domain or not domain.strip():
@@ -680,33 +720,43 @@ def _meeting_attendees(meeting: Dict) -> List[Dict]:
     return meeting.get('attendees') or meeting.get('participants') or []
 
 
+def _load_calendar_module(module_name: str):
+    """Load the calendar reader that belongs to this vault, not another checkout."""
+    calendar_server_path = BASE_DIR / "core" / "mcp" / "calendar_server.py"
+    if not calendar_server_path.exists():
+        raise RuntimeError("Calendar support is not installed in this vault.")
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(module_name, calendar_server_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Calendar support could not be loaded.")
+    calendar_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(calendar_module)
+    return calendar_module
+
+
 def get_calendar_events_for_week() -> List[Dict]:
     """
     Get calendar events for the current week by importing and calling calendar MCP.
     Raises with an honest reason when Calendar is unavailable; an empty list means
     the query succeeded and the user genuinely has no meetings this week.
     """
-    if platform.system() != 'Darwin':
-        raise RuntimeError(
-            "First-week calendar analysis is currently available only on macOS."
-        )
-
     try:
-        calendar_server_path = BASE_DIR / 'core' / 'mcp' / 'calendar_server.py'
-        if not calendar_server_path.exists():
-            raise RuntimeError("Calendar support is not installed in this vault.")
-
         profile = _load_first_week_profile()
         calendar_config = profile.get('calendar', {})
         if calendar_config.get('permissions_pending') is True:
             raise RuntimeError("Calendar access was skipped or permission is not available.")
-        
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("calendar_server", calendar_server_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError("Calendar support could not be loaded.")
-        calendar_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(calendar_module)
+
+        calendar_module = _load_calendar_module("calendar_server")
+
+        provider = _selected_calendar_provider(calendar_config)
+        if provider == "none":
+            raise RuntimeError("No calendar is connected yet, so there is no calendar week to analyze.")
+        if provider == "apple" and platform.system() != 'Darwin':
+            raise RuntimeError(
+                "First-week Apple Calendar analysis is currently available only on macOS."
+            )
         
         today = datetime.now()
         start = today - timedelta(days=today.weekday())
@@ -717,6 +767,31 @@ def get_calendar_events_for_week() -> List[Dict]:
             or profile.get('work_email')
             or calendar_module.DEFAULT_WORK_CALENDAR
         )
+        if provider == "google":
+            if not calendar_config.get('work_calendar'):
+                raise RuntimeError("The selected Google calendar is missing its calendar identifier.")
+            reader_factory = getattr(calendar_module, "_get_google_calendar_reader", None)
+            if not callable(reader_factory):
+                raise RuntimeError(
+                    "Google Calendar is selected, but its read-only calendar support is not installed."
+                )
+            result = reader_factory().get_events(
+                start_date=start.date().isoformat(),
+                end_date=end.date().isoformat(),
+                calendar_id=calendar_name,
+                with_attendees=True,
+            )
+            if not result.get("success"):
+                raise RuntimeError(
+                    result.get("user_message")
+                    or result.get("error")
+                    or "Google Calendar data could not be read."
+                )
+            events = result.get("events")
+            if not isinstance(events, list):
+                raise RuntimeError("Google Calendar returned an invalid event list.")
+            return events
+
         midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         start_offset = (
             start.replace(hour=0, minute=0, second=0, microsecond=0) - midnight
@@ -749,34 +824,39 @@ def get_calendar_events_for_entity_offer(days_back: int = 28) -> List[Dict]:
     """Read recent calendar evidence for entity qualification."""
     if days_back < 1:
         return []
-    if platform.system() != 'Darwin':
-        return []
-
     try:
-        calendar_server_path = BASE_DIR / 'core' / 'mcp' / 'calendar_server.py'
-        if not calendar_server_path.exists():
-            return []
-
         profile = _load_first_week_profile()
         calendar_config = profile.get('calendar', {})
         if calendar_config.get('permissions_pending') is True:
             return []
 
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "calendar_server_entity_offer",
-            calendar_server_path,
-        )
-        if spec is None or spec.loader is None:
+        calendar_module = _load_calendar_module("calendar_server_entity_offer")
+
+        provider = _selected_calendar_provider(calendar_config)
+        if provider == "none" or (provider == "apple" and platform.system() != 'Darwin'):
             return []
-        calendar_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(calendar_module)
 
         calendar_name = (
             calendar_config.get('work_calendar')
             or profile.get('work_email')
             or calendar_module.DEFAULT_WORK_CALENDAR
         )
+        if provider == "google":
+            if not calendar_config.get('work_calendar'):
+                return []
+            reader_factory = getattr(calendar_module, "_get_google_calendar_reader", None)
+            if not callable(reader_factory):
+                logger.warning("Google Calendar is selected but its reader is not installed.")
+                return []
+            result = reader_factory().get_events(
+                start_date=(datetime.now() - timedelta(days=days_back - 1)).date().isoformat(),
+                end_date=(datetime.now() + timedelta(days=1)).date().isoformat(),
+                calendar_id=calendar_name,
+                with_attendees=True,
+            )
+            events = result.get("events") if result.get("success") else None
+            return events if isinstance(events, list) else []
+
         success, output = calendar_module.run_shell_script(
             "calendar_eventkit.py",
             "attendees",
@@ -1521,6 +1601,7 @@ def run_first_week_analysis() -> Dict[str, Any]:
 
     return {
         "available": True,
+        "working_week_suggestion": working_week_suggestion_from_events(timed_events),
         "meeting_count": calendar_analysis['total_meetings'],
         "meeting_hours": calendar_analysis['meeting_hours'],
         "one_on_one_count": calendar_analysis['one_on_ones'],
@@ -1657,9 +1738,15 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["apple", "google", "none"],
+                        "description": "Calendar provider selected during onboarding",
+                        "default": "apple",
+                    },
                     "work_calendar": {
                         "type": "string",
-                        "description": "Exact work calendar name returned by Calendar.app",
+                        "description": "Exact Apple calendar name or Google calendar identifier",
                         "default": ""
                     },
                     "work_email": {
@@ -1669,7 +1756,7 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "calendar_count": {
                         "type": "integer",
-                        "description": "Number of calendars returned by Calendar.app",
+                        "description": "Number of calendars returned by the selected provider",
                         "minimum": 0,
                         "default": 0
                     },
@@ -2185,6 +2272,16 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
 
         elif name == "save_calendar_selection":
             skipped = arguments.get('skipped', False)
+            provider_was_supplied = "provider" in arguments
+            raw_provider = arguments.get("provider") or "apple"
+            if not isinstance(raw_provider, str):
+                result = create_error_response(
+                    "provider must be apple, google, or none",
+                    field="provider",
+                    suggestion="Choose Apple Calendar, Google Calendar, or no calendar",
+                )
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            provider = raw_provider.strip().casefold()
             work_calendar = (arguments.get('work_calendar') or '').strip()
             work_email = (arguments.get('work_email') or '').strip()
             calendar_count = arguments.get('calendar_count', 0)
@@ -2197,8 +2294,18 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
                 )
                 return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
+            if provider not in CALENDAR_PROVIDERS:
+                result = create_error_response(
+                    "provider must be apple, google, or none",
+                    field="provider",
+                    suggestion="Choose Apple Calendar, Google Calendar, or no calendar",
+                )
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
             if skipped:
                 calendar = {"permissions_pending": True}
+                if provider_was_supplied:
+                    calendar["provider"] = provider
                 session['data'].pop('work_email', None)
                 session['data']['calendar'] = calendar
                 save_session(session)
@@ -2208,6 +2315,20 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
                         "working_week_suggestion": default_working_week_suggestion(),
                     },
                     "Calendar setup skipped for now. /dex-doctor will pick this up later."
+                )
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+            if provider == "none":
+                calendar = {"provider": "none"}
+                session['data'].pop('work_email', None)
+                session['data']['calendar'] = calendar
+                save_session(session)
+                result = create_success_response(
+                    {
+                        "calendar": calendar,
+                        "working_week_suggestion": default_working_week_suggestion(),
+                    },
+                    "No calendar selected. You can connect one later.",
                 )
                 return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -2221,11 +2342,24 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
 
             verification_note = ""
             try:
-                from core.mcp.calendar_server import _get_calendar_list_result
+                if provider == "google":
+                    from core.mcp.calendar_server import _get_google_calendar_reader
 
-                calendar_list = _get_calendar_list_result()
+                    calendar_list = _get_google_calendar_reader().list_calendars()
+                else:
+                    from core.mcp.calendar_server import _get_calendar_list_result
+
+                    calendar_list = _get_calendar_list_result()
                 if calendar_list.get("success"):
-                    available_calendars = calendar_list["calendars"]
+                    if provider == "google":
+                        available_calendars = [
+                            calendar.get("identifier")
+                            for calendar in calendar_list["calendars"]
+                            if calendar.get("identifier")
+                        ]
+                        calendar_count = calendar_list.get("count", len(available_calendars))
+                    else:
+                        available_calendars = calendar_list["calendars"]
                     if work_calendar not in available_calendars:
                         result = create_error_response(
                             f"Calendar '{work_calendar}' was not found. Available calendars: "
@@ -2250,6 +2384,13 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
                 "calendar_count": calendar_count,
                 "lazy_load": True,
             }
+            if provider_was_supplied:
+                calendar["provider"] = provider
+
+            if provider == "google" and not work_email:
+                inferred_identity = derive_identity_from_email(work_calendar)
+                if inferred_identity.get("domain"):
+                    work_email = work_calendar
             if work_email:
                 session['data']['work_email'] = work_email
             else:

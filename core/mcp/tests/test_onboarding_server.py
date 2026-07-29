@@ -429,6 +429,7 @@ class TestFirstWeekAnalysis:
         analysis = payload["data"]
         assert set(analysis) == {
             "available",
+            "working_week_suggestion",
             "meeting_count",
             "meeting_hours",
             "one_on_one_count",
@@ -441,6 +442,10 @@ class TestFirstWeekAnalysis:
             "draft_weekly_plan",
         }
         assert analysis["available"] is True
+        assert analysis["working_week_suggestion"] == {
+            "days": ["monday"],
+            "basis": "calendar",
+        }
         assert analysis["meeting_count"] == 1
         assert analysis["meeting_hours"] == 1.5
         assert analysis["one_on_one_count"] == 1
@@ -514,6 +519,14 @@ class TestFirstWeekAnalysis:
         assert payload["success"] is True
         analysis = payload["data"]
         assert analysis["available"] is True
+        assert analysis["working_week_suggestion"] == {
+            "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+            "basis": "default",
+            "reason": (
+                "Your calendar has no timed meetings this week, so Dex can't infer "
+                "your working days yet."
+            ),
+        }
         assert analysis["meeting_count"] == 0
         assert analysis["meeting_hours"] == 0.0
         assert analysis["one_on_one_count"] == 0
