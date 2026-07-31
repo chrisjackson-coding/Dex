@@ -29,6 +29,18 @@ _Avoid_: Scorecard, maturity score, feature inventory
 The visible basis for a Capability Map finding: Verified from direct inspection, Supported by material the person supplied, Reported by the person, or Unknown for lack of evidence.
 _Avoid_: Confidence score, assumed truth
 
+**Host Adapter**:
+A system-specific interpreter that maps available evidence from one personal AI environment into the provider-neutral Job Map and Capability Map contracts.
+_Avoid_: Universal scanner, platform-specific diagnosis
+
+**Deep Adapter**:
+A Host Adapter with enough direct access to configuration and run evidence to support Verified Capability Map findings for its declared environment.
+_Avoid_: Compatible system, assumed support
+
+**Living System**:
+A personal AI system used repeatedly for at least one real user job and supported by inspectable or person-supplied evidence of that work.
+_Avoid_: Prompt collection, demonstration setup
+
 **Adaptation**:
 The separate, user-approved process that adds or strengthens a selected capability with an exact preview, recovery path, and outcome verification.
 _Avoid_: Migration, silent repair, bulk install
