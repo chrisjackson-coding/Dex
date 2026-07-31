@@ -41,6 +41,10 @@ _Avoid_: Compatible system, assumed support
 A personal AI system used repeatedly for at least one real user job and supported by inspectable or person-supplied evidence of that work.
 _Avoid_: Prompt collection, demonstration setup
 
+**Capability Catalog**:
+A signed, versioned description of capabilities available in an actual Dex Core release, consumed by Capability Exchange without treating merged, held, or experimental work as available.
+_Avoid_: Main-branch scan, feature list, release file manifest
+
 **Adaptation**:
 The separate, user-approved process that adds or strengthens a selected capability with an exact preview, recovery path, and outcome verification.
 _Avoid_: Migration, silent repair, bulk install
@@ -56,3 +60,7 @@ _Avoid_: Consent banner, bulk sharing
 **Contribution**:
 The explicit act of sharing one selected and approved Capability Card with Dex as a candidate for Core consideration.
 _Avoid_: Sync, automatic feedback, opt-out sharing
+
+**Core Candidate**:
+A moderated Capability Card accepted by Capability Exchange for optional Dex Core evaluation, without implying that Core will adopt or ship it.
+_Avoid_: Feature commitment, automatic improvement, raw contribution
