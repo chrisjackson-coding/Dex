@@ -7,6 +7,31 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
+## [1.81.11] — ⏱️ Public follow-up proof gets a fair bounded window (2026-08-03)
+
+The formal Mac fleet could reach the public foundation, then give GitHub only
+the ordinary ten-second identity window to prove and fetch the exact follow-up.
+That was safely bounded, but too short for a real public delivery under normal
+network variation, so a healthy route could stop before its journey began.
+
+**What this fixes for you:**
+
+* **The public follow-up gets up to one minute to prove itself.** The bridge gives
+  the exact release fetch enough time to complete while retaining a hard deadline;
+  it still cannot wait indefinitely.
+* **Local test transport follows the same limit.** A private canary cache cannot
+  make the release look healthier by receiving a looser delivery budget than the
+  real public route.
+* **A failed delivery leaves useful, privacy-safe evidence.** Fleet diagnostics
+  record only an allowlisted reason and bounded elapsed time, without retaining
+  release payloads or other private runtime detail.
+* **Stable release capacity remains fail-closed.** Beta prereleases no longer
+  consume the stable pre-publication margin, while malformed versions and the
+  shipped stable tag bound are still refused.
+* **Fleet acceptance is still earned by journeys.** This release includes the
+  bounded follow-up-delivery repair; the freshly generated 170-case Mac run must
+  still complete before Dex claims historic two-hop acceptance.
+
 ## [1.81.10] — 🛡️ Fleet proof no longer spends GitHub's shared API allowance (2026-08-03)
 
 The formal Mac fleet re-derived all 170 public starting cases, then GitHub refused
