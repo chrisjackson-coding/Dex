@@ -7,6 +7,29 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
+## [1.81.13] — 🛡️ v1.63 upgrades preserve your profile (2026-08-03)
+
+The formal Mac fleet reached one exact v1.63 package whose original migrator
+tried to add release metadata to `System/user-profile.yaml`. That file belongs
+to the person, so Dex stopped before accepting the update rather than silently
+changing it.
+
+**What this fixes for you:**
+
+* **Known v1.63 packages use the corrected migration path.** The four exact
+  immutable v1.63 release identities now run the verified foundation migrator
+  instead of their older embedded copy.
+* **Your profile remains your file.** The exact failed package completed both
+  update hops with its profile, tasks, inbox note, and customised weekly-review
+  skill byte-for-byte unchanged.
+* **Unknown installs still stop safely.** The compatibility route remains closed
+  to the four published identities; altered or unfamiliar packages do not gain
+  a broader exception.
+* **Fleet acceptance is still earned by journeys.** The release-shaped six-case
+  Mac canary passed, including the exact v1.63 failure, but the freshly generated
+  170-case public fleet must restart and finish before Dex claims full historic
+  support.
+
 ## [1.81.12] — (2026-08-03)
 
 ## [1.81.11] — (2026-08-03)
