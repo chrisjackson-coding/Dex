@@ -6,6 +6,10 @@ set -euo pipefail
 
 CANONICAL_PUBLIC_REMOTE="https://github.com/davekilleen/Dex.git"
 PINNED_FOUNDATION_TAG="dist/release/v1.81.0-6bc490e"
+DIAGNOSTIC_START_TAG="v1.73.0"
+DIAGNOSTIC_START_OBJECT="9ce09979a61ddfea726041b83e952924b378ce96"
+DIAGNOSTIC_START_COMMIT="c316cd9f318dbcd51f24f43b4f9239045cba6c5c"
+DIAGNOSTIC_FOLLOW_UP_TAG="dist/release/v1.81.14-31a6bb8"
 MAX_DISK_KIB=$((50 * 1024 * 1024))
 CANARY_STARTS=(
   "v1.51.0"
@@ -361,12 +365,70 @@ run_canary() {
 
   refresh_public_tags
   assert_public_annotated_tag "$PINNED_FOUNDATION_TAG"
+  assert_public_annotated_tag "$DIAGNOSTIC_FOLLOW_UP_TAG"
+  if [ "$(git cat-file -t "$DIAGNOSTIC_START_TAG" 2>/dev/null || true)" != "tag" ] \
+    || [ "$(git rev-parse --verify "$DIAGNOSTIC_START_TAG")" != "$DIAGNOSTIC_START_OBJECT" ] \
+    || [ "$(git rev-parse --verify "$DIAGNOSTIC_START_TAG^{commit}")" != "$DIAGNOSTIC_START_COMMIT" ]; then
+    echo "public diagnostic start identity does not match: $DIAGNOSTIC_START_TAG" >&2
+    return 1
+  fi
+  diagnostic_advertised="$(git -c credential.helper= -c protocol.file.allow=never ls-remote \
+    --refs --tags "$CANONICAL_PUBLIC_REMOTE" "refs/tags/$DIAGNOSTIC_START_TAG")"
+  if [ "$diagnostic_advertised" != "$DIAGNOSTIC_START_OBJECT"$'\t'"refs/tags/$DIAGNOSTIC_START_TAG" ]; then
+    echo "public diagnostic start is not the exact advertised tag: $DIAGNOSTIC_START_TAG" >&2
+    return 1
+  fi
   for start in "${CANARY_STARTS[@]}"; do
     if ! git rev-parse --verify "$start^{commit}" >/dev/null 2>&1; then
       echo "public canary start is unavailable: $start" >&2
       return 1
     fi
   done
+
+  JOURNEY_ROOT="$WORK_ROOT/journeys"
+  mkdir -m 700 "$JOURNEY_ROOT"
+  DISCOVERED=$((${#CANARY_STARTS[@]} + 1))
+
+  DIAGNOSTIC_VERSION="1.81.14"
+  DIAGNOSTIC_ASSET_ROOT="$WORK_ROOT/public-diagnostic-assets"
+  mkdir -m 700 "$DIAGNOSTIC_ASSET_ROOT"
+  DIAGNOSTIC_BRIDGE_ASSET="$DIAGNOSTIC_ASSET_ROOT/dex-update-bridge-v$DIAGNOSTIC_VERSION.py"
+  DIAGNOSTIC_BRIDGE_CHECKSUM="$DIAGNOSTIC_BRIDGE_ASSET.sha256"
+  DIAGNOSTIC_PUBLIC_RELEASE="https://github.com/davekilleen/Dex/releases/download/v$DIAGNOSTIC_VERSION"
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
+    --retry 3 --retry-all-errors --max-time 120 \
+    "$DIAGNOSTIC_PUBLIC_RELEASE/$(basename "$DIAGNOSTIC_BRIDGE_ASSET")" \
+    --output "$DIAGNOSTIC_BRIDGE_ASSET"
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
+    --retry 3 --retry-all-errors --max-time 120 \
+    "$DIAGNOSTIC_PUBLIC_RELEASE/$(basename "$DIAGNOSTIC_BRIDGE_CHECKSUM")" \
+    --output "$DIAGNOSTIC_BRIDGE_CHECKSUM"
+  if [ "$(wc -c < "$DIAGNOSTIC_BRIDGE_ASSET")" -gt $((16 * 1024 * 1024)) ] \
+    || [ "$(wc -c < "$DIAGNOSTIC_BRIDGE_CHECKSUM")" -gt 4096 ]; then
+    echo "public diagnostic bridge asset exceeds its bounded size" >&2
+    return 1
+  fi
+  (cd "$DIAGNOSTIC_ASSET_ROOT" && shasum -a 256 -c "$(basename "$DIAGNOSTIC_BRIDGE_CHECKSUM")")
+
+  STARTED=$((STARTED + 1))
+  if run_bounded python3 scripts/release_fleet.py journey \
+    --repo . --output "$JOURNEY_ROOT" \
+    --starting-tag "$DIAGNOSTIC_START_TAG" \
+    --foundation-tag "$PINNED_FOUNDATION_TAG" \
+    --follow-up-tag "$DIAGNOSTIC_FOLLOW_UP_TAG" \
+    --bridge-asset "$DIAGNOSTIC_BRIDGE_ASSET" \
+    --bridge-checksum "$DIAGNOSTIC_BRIDGE_CHECKSUM" \
+    --controlled-approvals
+  then
+    COMPLETED=$((COMPLETED + 1))
+    PASSED=$((PASSED + 1))
+    write_counts
+  else
+    journey_status=$?
+    FAILED=$((FAILED + 1))
+    tail -200 "$LOG_FILE" >&2 || true
+    return "$journey_status"
+  fi
 
   git config user.name "github-actions[bot]"
   git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -399,9 +461,6 @@ run_canary() {
   BRIDGE_CHECKSUM="$BRIDGE_ASSET.sha256"
   (cd "$ASSET_ROOT" && shasum -a 256 -c "$(basename "$BRIDGE_CHECKSUM")")
 
-  JOURNEY_ROOT="$WORK_ROOT/journeys"
-  mkdir -m 700 "$JOURNEY_ROOT"
-  DISCOVERED="${#CANARY_STARTS[@]}"
   for start in "${CANARY_STARTS[@]}"; do
     STARTED=$((STARTED + 1))
     if run_bounded python3 scripts/release_fleet.py journey \

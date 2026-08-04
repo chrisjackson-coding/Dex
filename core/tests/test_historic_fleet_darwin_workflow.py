@@ -49,12 +49,13 @@ def test_formal_workflow_is_manual_read_only_and_pinned() -> None:
     assert upload["with"]["if-no-files-found"] == "warn"
 
 
-def test_seven_start_pr_canary_is_release_shaped_and_cannot_publish() -> None:
+def test_pr_canary_runs_exact_public_v173_first_then_preserves_seven_candidate_starts() -> None:
     workflow = _workflow()
     canary = workflow["jobs"]["historic-fleet-darwin-pr-canary"]
     assert canary["if"] == "github.event_name == 'pull_request'"
     assert any(
-        step.get("name") == "Run seven release-shaped macOS journeys"
+        step.get("name")
+        == "Run public v1.73 diagnostic then seven release-shaped macOS journeys"
         for step in canary["steps"]
     )
     assert any(
@@ -72,6 +73,21 @@ def test_seven_start_pr_canary_is_release_shaped_and_cannot_publish() -> None:
         re.findall(r'^  "([^"]+)"$', canary_block.group("body"), re.MULTILINE)
     )
     assert len(canary_starts) == 7
+    assert 'DIAGNOSTIC_START_TAG="v1.73.0"' in source
+    assert (
+        'DIAGNOSTIC_START_OBJECT="9ce09979a61ddfea726041b83e952924b378ce96"'
+        in source
+    )
+    assert (
+        'DIAGNOSTIC_START_COMMIT="c316cd9f318dbcd51f24f43b4f9239045cba6c5c"'
+        in source
+    )
+    assert (
+        'DIAGNOSTIC_FOLLOW_UP_TAG="dist/release/v1.81.14-31a6bb8"' in source
+    )
+    assert source.index('--starting-tag "$DIAGNOSTIC_START_TAG"') < source.index(
+        '--starting-tag "$start"', source.index("run_canary()")
+    )
     assert canary_starts == (
         "v1.51.0",
         "dist/release/v1.61.0-dc7d332",
@@ -83,9 +99,15 @@ def test_seven_start_pr_canary_is_release_shaped_and_cannot_publish() -> None:
     )
     assert "build-release.sh --source candidate --target release" in source
     assert "build-vault-bundle.sh" in source
-    assert source.count("--controlled-approvals") == 1
+    assert source.count("--controlled-approvals") == 2
     assert source.count("--follow-up-cache") == 1
     assert "--follow-up-cache" not in source.split("run_canary()", 1)[0]
+    diagnostic_call = source.split(
+        '--starting-tag "$DIAGNOSTIC_START_TAG"', 1
+    )[1].split("then", 1)[0]
+    assert '--foundation-tag "$PINNED_FOUNDATION_TAG"' in diagnostic_call
+    assert '--follow-up-tag "$DIAGNOSTIC_FOLLOW_UP_TAG"' in diagnostic_call
+    assert "--follow-up-cache" not in diagnostic_call
     assert "git push" not in source
     assert "gh release" not in source
     assert "GH_TOKEN" not in WORKFLOW_PATH.read_text(encoding="utf-8")
