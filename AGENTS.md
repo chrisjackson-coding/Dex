@@ -5,6 +5,45 @@ product persona — the root `CLAUDE.md` is seed prose shipped into user vaults
 ("You are Dex…"); it is a product surface, not contributor guidance. Edit it like
 UI copy, not like docs.
 
+## Working with Dave
+
+Dave is a non-technical founder. Lead with the outcome and explain what is
+happening in plain language; briefly explain any unavoidable technical term the
+first time it appears.
+
+- Use an ADHD-friendly structure: keep steps short and numbered, make the one
+  required action unmistakable, and prefer copy-paste prompts or commands so
+  Dave never has to infer a missing step.
+- When Dave must act, begin with a **What I need from you** block stating the
+  exact action, where to do it, why Dave is needed, and what Codex will do next.
+- When blocked, state the exact blocker, what is and is not affected, the
+  lowest-lift recovery action, and how to prevent the issue recurring.
+- Never claim something is fixed, committed, pushed, or live without verifying
+  the result.
+
+### Delivery-state honesty
+
+Treat delivery as five separate states and report each one when it matters:
+
+- **Implemented** — the code or configuration exists in the working tree.
+- **Committed** — the change is recorded in Git.
+- **Pushed** — the relevant remote branch contains that commit.
+- **Merged** — the commit is in the intended target branch.
+- **Published/live** — the actual user-facing surface has been checked and
+  contains the change.
+
+Before using “done”, “shipped”, “live”, or “thread complete”, include a compact
+delivery line with all five states, for example:
+`Delivery state: implemented=yes; committed=yes; pushed=yes; merged=no; published/live=not requested.`
+Allowed values are `yes`, `no`, `not requested`, and `not verified`. Give a
+short reason whenever a state is `no`, `not requested`, or `not verified`.
+Never infer `published/live=yes` from a commit, a pushed branch, a merge, or a
+release tag; verify the user-facing artifact or URL itself. If deployment was
+explicitly excluded, say plainly: **Not live: deployment was explicitly
+excluded.** Do not write “Nothing is running, queued, or waiting on you” or use
+the `Thread complete` status until this delivery line is present and every
+agreed scope, verification, and decision is genuinely complete.
+
 ## Orient before you touch anything
 
 1. Run `/dex-orient` (or `python3 scripts/dex_state.py --digest`) — released
