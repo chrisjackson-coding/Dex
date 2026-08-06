@@ -13,6 +13,8 @@ from types import ModuleType
 
 import pytest
 
+from core.lifecycle import service as lifecycle_service
+from core.transaction.engine import PlanRejected
 from scripts import dex_update_bridge as bridge
 
 
@@ -132,8 +134,16 @@ def _foundation_topology_adapter(
     apply_update.portable_contract = ModuleType("test_portable_contract")
     apply_update.portable_contract.ContractViolation = RuntimeError
     apply_update.TreeEntry = tuple
+    apply_update.deliver_latest_release = lambda vault_root, **_kwargs: {
+        "status": "delivered",
+        "vault": str(vault_root),
+    }
 
     class Service:
+        @staticmethod
+        def _envelope(**values: object) -> dict[str, object]:
+            return {"api_version": "1.0.0", **values}
+
         def build_and_preview_topology_migration(self, vault_root: Path):
             state = engine.topology_state(vault_root)
             return {
@@ -193,11 +203,11 @@ def _foundation_topology_adapter(
 
 def test_foundation_pin_is_closed_and_uses_only_the_release_channel() -> None:
     assert bridge.FOUNDATION.identity() == {
-        "tag": "dist/release/v1.81.0-6bc490e",
-        "tag_object": "54b1ceef8b1f7ad4f67e4d4d045a134ea443ab53",
-        "commit": "6bc490e7caec22f60f097c6b54bb563382f542b8",
-        "tree": "dad3e43774e772dfc42df698f8a9818956346d78",
-        "version": "1.81.0",
+        "tag": "dist/release/v1.81.16-281202d",
+        "tag_object": "6abd259c87bf88519fd8b0bfa863cb99b959660f",
+        "commit": "281202dcc10a41540c5f72bd6b47bd7d7dcc776d",
+        "tree": "6725b11a8756b04ba7d6b26399ab90eb75f43af0",
+        "version": "1.81.16",
         "channel": "stable",
     }
 
@@ -214,7 +224,12 @@ def test_foundation_fetch_survives_public_release_channel_advancing(
     calls: list[tuple[str, ...]] = []
     private_release_ref = follow_up_commit
 
-    def run_git(_directory: Path, *arguments: str) -> str:
+    def run_git(
+        _directory: Path,
+        *arguments: str,
+        timeout_seconds: float = 90.0,
+    ) -> str:
+        del timeout_seconds
         nonlocal private_release_ref
         calls.append(arguments)
         if arguments == (
@@ -251,6 +266,174 @@ def test_foundation_fetch_survives_public_release_channel_advancing(
     ) in calls
 
 
+def test_public_foundation_fetch_retries_one_closed_network_failure_then_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcomes: list[bridge.BridgeError | None] = [
+        bridge.BridgeError(
+            "fatal: unable to access the public release: Could not resolve host: github.com"
+        ),
+        None,
+    ]
+    calls: list[tuple[str, ...]] = []
+    timeouts: list[float] = []
+    sleeps: list[float] = []
+
+    def run_git(
+        _directory: Path,
+        *arguments: str,
+        timeout_seconds: float = 90.0,
+    ) -> str:
+        calls.append(arguments)
+        timeouts.append(timeout_seconds)
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+        return ""
+
+    monkeypatch.setattr(bridge, "_run_git", run_git)
+    monkeypatch.setattr(bridge.time, "sleep", sleeps.append)
+
+    bridge._fetch_public_foundation_tag(tmp_path, bridge.FOUNDATION)
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert calls[0][-2:] == (
+        bridge.OFFICIAL_REMOTE,
+        f"refs/tags/{bridge.FOUNDATION.tag}:refs/tags/{bridge.FOUNDATION.tag}",
+    )
+    assert 0 < timeouts[1] <= timeouts[0] <= bridge._PUBLIC_FOUNDATION_FETCH_TOTAL_SECONDS
+    assert sleeps == [bridge._PUBLIC_FOUNDATION_FETCH_RETRY_DELAY_SECONDS]
+
+
+def test_public_foundation_fetch_preserves_transient_error_when_retry_delay_exceeds_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = bridge.BridgeError("connection timed out")
+    calls: list[tuple[str, ...]] = []
+    sleeps: list[float] = []
+    monotonic = iter((100.0, 100.0, 189.95, 190.0))
+
+    def run_git(
+        _directory: Path,
+        *arguments: str,
+        timeout_seconds: float = 90.0,
+    ) -> str:
+        del timeout_seconds
+        calls.append(arguments)
+        raise failure
+
+    monkeypatch.setattr(bridge, "_run_git", run_git)
+    monkeypatch.setattr(bridge.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(bridge.time, "sleep", sleeps.append)
+
+    with pytest.raises(bridge.BridgeError) as raised:
+        bridge._fetch_public_foundation_tag(tmp_path, bridge.FOUNDATION)
+
+    assert raised.value is failure
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_public_foundation_fetch_stops_after_two_closed_network_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcomes = iter(
+        (
+            bridge.BridgeError("temporary failure in name resolution"),
+            bridge.BridgeError("connection timed out"),
+        )
+    )
+    calls: list[tuple[str, ...]] = []
+    sleeps: list[float] = []
+
+    def run_git(
+        _directory: Path,
+        *arguments: str,
+        timeout_seconds: float = 90.0,
+    ) -> str:
+        del timeout_seconds
+        calls.append(arguments)
+        raise next(outcomes)
+
+    monkeypatch.setattr(bridge, "_run_git", run_git)
+    monkeypatch.setattr(bridge.time, "sleep", sleeps.append)
+
+    with pytest.raises(bridge.BridgeError, match="^connection timed out$"):
+        bridge._fetch_public_foundation_tag(tmp_path, bridge.FOUNDATION)
+
+    assert len(calls) == 2
+    assert sleeps == [bridge._PUBLIC_FOUNDATION_FETCH_RETRY_DELAY_SECONDS]
+
+
+def test_public_foundation_fetch_does_not_retry_non_network_git_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    sleeps: list[float] = []
+
+    def run_git(
+        _directory: Path,
+        *arguments: str,
+        timeout_seconds: float = 90.0,
+    ) -> str:
+        del timeout_seconds
+        calls.append(arguments)
+        raise bridge.BridgeError("fatal: repository not found")
+
+    monkeypatch.setattr(bridge, "_run_git", run_git)
+    monkeypatch.setattr(bridge.time, "sleep", sleeps.append)
+
+    with pytest.raises(bridge.BridgeError, match="^fatal: repository not found$"):
+        bridge._fetch_public_foundation_tag(tmp_path, bridge.FOUNDATION)
+
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_both_public_foundation_fetch_sites_use_the_bounded_retry_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper_calls: list[tuple[Path, bridge.ReleasePin]] = []
+
+    def fetch_public_foundation_tag(repository: Path, pin: bridge.ReleasePin) -> None:
+        helper_calls.append((repository, pin))
+
+    def run_git(_directory: Path, *arguments: str) -> str:
+        if arguments == ("rev-parse", "--verify", f"refs/tags/{bridge.FOUNDATION.tag}"):
+            return bridge.FOUNDATION.tag_object
+        if arguments == ("rev-parse", "--verify", f"{bridge.FOUNDATION.tag}^{{commit}}"):
+            return bridge.FOUNDATION.commit
+        if arguments == ("rev-parse", "--verify", f"{bridge.FOUNDATION.tag}^{{tree}}"):
+            return bridge.FOUNDATION.tree
+        if arguments == (
+            "rev-parse",
+            "--verify",
+            "refs/remotes/upstream/release^{commit}",
+        ):
+            return bridge.FOUNDATION.commit
+        return ""
+
+    monkeypatch.setattr(bridge, "_fetch_public_foundation_tag", fetch_public_foundation_tag)
+    monkeypatch.setattr(bridge, "_run_git", run_git)
+
+    temporary, _source = bridge.acquire_foundation_source()
+    try:
+        bridge._fetch_foundation_into_brain(_vault(tmp_path), bridge.FOUNDATION)
+    finally:
+        temporary.cleanup()
+
+    assert [(repository.name, pin) for repository, pin in helper_calls] == [
+        ("evidence.git", bridge.FOUNDATION),
+        ("brain.git", bridge.FOUNDATION),
+    ]
+
+
 def test_legacy_topology_pin_is_closed_to_exact_v1201_release() -> None:
     assert bridge.LEGACY_TOPOLOGY_FOUNDATION == bridge.LegacyTopologyPin(
         tag="v1.20.1",
@@ -258,6 +441,447 @@ def test_legacy_topology_pin_is_closed_to_exact_v1201_release() -> None:
         commit="9e6f35d3282cb354008a4e7372b1cdb1d469ad3d",
         tree="b781bb94e417b2873d057a5a417d8c666a360bca",
     )
+
+
+def _write_v1201_archive_marker(
+    archive: Path,
+    pin: bridge.LegacyTopologyPin,
+    head: str,
+) -> None:
+    (archive / bridge._PRE_SPLIT_ARCHIVE_MARKER).write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "migrationId": "2026-08-03T00:00:00.000Z",
+                "preSplitHead": head,
+                "releaseCommit": pin.commit,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_completed_split_proves_v1201_only_from_exact_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _vault(tmp_path)
+    archive = vault / ".dex" / "pre-split-archive.git"
+    archive.mkdir()
+    pin = bridge.LEGACY_TOPOLOGY_FOUNDATION
+    head = "f" * 40
+    _write_v1201_archive_marker(archive, pin, head)
+    values = {
+        (
+            "for-each-ref",
+            "--format=%(objectname)",
+            f"refs/tags/{pin.tag}",
+        ): pin.tag_object,
+        ("cat-file", "-t", pin.tag_object): "tag",
+        ("rev-parse", "--verify", f"{pin.tag}^{{commit}}"): pin.commit,
+        ("rev-parse", "--verify", f"{pin.tag}^{{tree}}"): pin.tree,
+        ("rev-parse", "--verify", "HEAD^{commit}"): head,
+        ("merge-base", "--is-ancestor", pin.commit, head): "",
+    }
+    ancestry_ok = True
+
+    def run_git(root: Path, *arguments: str) -> str:
+        if root != archive:
+            pytest.fail("only the verified archive may be inspected")
+        if arguments[0] == "merge-base" and not ancestry_ok:
+            raise bridge.BridgeError("not an ancestor")
+        return values[arguments]
+
+    monkeypatch.setattr(bridge, "_run_git", run_git)
+
+    assert bridge._archive_has_exact_v1201_origin(vault) is True
+
+    values[("rev-parse", "--verify", f"{pin.tag}^{{tree}}")] = "0" * 40
+    assert bridge._archive_has_exact_v1201_origin(vault) is False
+
+
+def test_completed_split_accepts_exact_pinned_commit_when_archive_tag_was_pruned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _vault(tmp_path)
+    archive = vault / ".dex" / "pre-split-archive.git"
+    archive.mkdir()
+    pin = bridge.LEGACY_TOPOLOGY_FOUNDATION
+    head = "f" * 40
+    _write_v1201_archive_marker(archive, pin, head)
+    values = {
+        (
+            "for-each-ref",
+            "--format=%(objectname)",
+            f"refs/tags/{pin.tag}",
+        ): "",
+        ("cat-file", "-t", pin.commit): "commit",
+        ("rev-parse", "--verify", f"{pin.commit}^{{commit}}"): pin.commit,
+        ("rev-parse", "--verify", f"{pin.commit}^{{tree}}"): pin.tree,
+        ("rev-parse", "--verify", "HEAD^{commit}"): head,
+        ("merge-base", "--is-ancestor", pin.commit, head): "",
+    }
+    ancestry_ok = True
+
+    def run_git(root: Path, *arguments: str) -> str:
+        if root != archive:
+            pytest.fail("only the verified archive may be inspected")
+        if arguments[0] == "merge-base" and not ancestry_ok:
+            raise bridge.BridgeError("not an ancestor")
+        return values[arguments]
+
+    monkeypatch.setattr(bridge, "_run_git", run_git)
+
+    assert bridge._archive_has_exact_v1201_origin(vault) is True
+
+    values[("rev-parse", "--verify", f"{pin.commit}^{{tree}}")] = "0" * 40
+    assert bridge._archive_has_exact_v1201_origin(vault) is False
+    values[("rev-parse", "--verify", f"{pin.commit}^{{tree}}")] = pin.tree
+    values[("cat-file", "-t", pin.commit)] = "blob"
+    assert bridge._archive_has_exact_v1201_origin(vault) is False
+    values[("cat-file", "-t", pin.commit)] = "commit"
+    ancestry_ok = False
+    assert bridge._archive_has_exact_v1201_origin(vault) is False
+
+    marker = json.loads(
+        (archive / bridge._PRE_SPLIT_ARCHIVE_MARKER).read_text(encoding="utf-8")
+    )
+    marker["releaseCommit"] = "0" * 40
+    (archive / bridge._PRE_SPLIT_ARCHIVE_MARKER).write_text(
+        json.dumps(marker) + "\n",
+        encoding="utf-8",
+    )
+    assert bridge._archive_has_exact_v1201_origin(vault) is False
+
+
+def test_exact_v1201_bridge_reconciles_dormant_qmd_in_approved_mcp_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, _engine, vault, _migrator = _foundation_topology_adapter(tmp_path)
+    adapter._service = lifecycle_service
+    subprocess.run(["git", "init", "--quiet"], cwd=vault, check=True)
+    subprocess.run(["git", "config", "user.name", "Dex Tests"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=vault,
+        check=True,
+    )
+    original = {
+        "mcpServers": {
+            "qmd": {"command": "qmd", "args": ["mcp"]},
+            "user-server": {
+                "type": "http",
+                "url": "https://example.com/mcp",
+            },
+        },
+        "userSetting": {"preserve": True},
+    }
+    (vault / ".mcp.json").write_text(
+        json.dumps(original, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".mcp.json"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "legacy MCP config"],
+        cwd=vault,
+        check=True,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_v1201_origin_is_proven",
+        lambda _root: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_optional_qmd_executable",
+        lambda: None,
+        raising=False,
+    )
+
+    registration = adapter.build_and_preview_mcp_registration(vault)
+
+    assert registration["needed"] is True
+    assert registration["preview"]["registration"]["action"] == (
+        "add-current-and-remove-dormant-qmd"
+    )
+    assert registration["preview"]["purpose"] == "legacy-qmd-reconciliation"
+    assert registration["preview"]["compatibility"] == {
+        "action": "remove-dormant-legacy-registration",
+        "server_name": "qmd",
+    }
+    receipt = adapter.execute_approved_mcp_registration(
+        vault,
+        registration["preview"],
+        registration["approval_token"],
+    )
+    assert receipt["receipt"]["purpose"] == "legacy-qmd-reconciliation"
+    updated = json.loads((vault / ".mcp.json").read_text(encoding="utf-8"))
+    assert "qmd" not in updated["mcpServers"]
+    assert "customization-migration-mcp" in updated["mcpServers"]
+    assert updated["mcpServers"]["user-server"] == original["mcpServers"]["user-server"]
+    assert updated["userSetting"] == original["userSetting"]
+
+
+def _configured_v1201_compatibility_adapter(
+    tmp_path: Path,
+) -> tuple[bridge._FoundationLifecycleService, Path, dict[str, object]]:
+    adapter, _engine, vault, _migrator = _foundation_topology_adapter(tmp_path)
+    adapter._service = lifecycle_service
+    subprocess.run(["git", "init", "--quiet"], cwd=vault, check=True)
+    subprocess.run(["git", "config", "user.name", "Dex Tests"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=vault,
+        check=True,
+    )
+    original: dict[str, object] = {
+        "mcpServers": {
+            "qmd": {"command": "qmd", "args": ["mcp"]},
+            "user-server": {"type": "http", "url": "https://example.com/mcp"},
+        },
+        "userSetting": {"preserve": True},
+    }
+    (vault / ".mcp.json").write_text(
+        json.dumps(original, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".mcp.json"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "legacy MCP config"],
+        cwd=vault,
+        check=True,
+    )
+    return adapter, vault, original
+
+
+def test_completed_split_archive_proof_builds_v1201_compatibility_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, vault, _original = _configured_v1201_compatibility_adapter(tmp_path)
+    archive = vault / ".dex" / "pre-split-archive.git"
+    archive.mkdir()
+    pin = bridge.LEGACY_TOPOLOGY_FOUNDATION
+    head = "f" * 40
+    _write_v1201_archive_marker(archive, pin, head)
+    values = {
+        (
+            "for-each-ref",
+            "--format=%(objectname)",
+            f"refs/tags/{pin.tag}",
+        ): "",
+        ("cat-file", "-t", pin.commit): "commit",
+        ("rev-parse", "--verify", f"{pin.commit}^{{commit}}"): pin.commit,
+        ("rev-parse", "--verify", f"{pin.commit}^{{tree}}"): pin.tree,
+        ("rev-parse", "--verify", "HEAD^{commit}"): head,
+        ("merge-base", "--is-ancestor", pin.commit, head): "",
+    }
+    monkeypatch.setattr(bridge, "_legacy_topology_authorization", lambda _root: None)
+    monkeypatch.setattr(
+        bridge,
+        "_run_git",
+        lambda root, *arguments: (
+            values[arguments]
+            if root == archive
+            else pytest.fail("only the verified archive may be inspected")
+        ),
+    )
+    monkeypatch.setattr(bridge, "_optional_qmd_executable", lambda: None)
+
+    registration = adapter.build_and_preview_mcp_registration(vault)
+
+    assert registration["needed"] is True
+    assert registration["preview"]["registration"]["action"] == (
+        "add-current-and-remove-dormant-qmd"
+    )
+    assert registration["preview"]["compatibility"]["action"] == (
+        "remove-dormant-legacy-registration"
+    )
+
+
+@pytest.mark.parametrize("mutation", ["unrelated", "qmd-changed", "qmd-removed"])
+def test_v1201_compatibility_refuses_configuration_changed_after_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    adapter, vault, _original = _configured_v1201_compatibility_adapter(tmp_path)
+    monkeypatch.setattr(adapter, "_v1201_origin_is_proven", lambda _root: True)
+    monkeypatch.setattr(bridge, "_optional_qmd_executable", lambda: None)
+    registration = adapter.build_and_preview_mcp_registration(vault)
+    config = vault / ".mcp.json"
+    changed = json.loads(config.read_text(encoding="utf-8"))
+    if mutation == "unrelated":
+        changed["userSetting"]["changed_after_preview"] = True
+    elif mutation == "qmd-changed":
+        changed["mcpServers"]["qmd"]["args"] = ["serve"]
+    else:
+        del changed["mcpServers"]["qmd"]
+    config.write_text(json.dumps(changed, indent=2) + "\n", encoding="utf-8")
+    changed_bytes = config.read_bytes()
+
+    with pytest.raises(
+        (bridge.BridgeError, PlanRejected),
+        match="approval does not match",
+    ):
+        adapter.execute_approved_mcp_registration(
+            vault,
+            registration["preview"],
+            registration["approval_token"],
+        )
+
+    assert config.read_bytes() == changed_bytes
+
+
+@pytest.mark.parametrize("tamper", ["compatibility", "writes", "token"])
+def test_v1201_compatibility_refuses_tampered_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    adapter, vault, _original = _configured_v1201_compatibility_adapter(tmp_path)
+    monkeypatch.setattr(adapter, "_v1201_origin_is_proven", lambda _root: True)
+    monkeypatch.setattr(bridge, "_optional_qmd_executable", lambda: None)
+    registration = adapter.build_and_preview_mcp_registration(vault)
+    preview = json.loads(json.dumps(registration["preview"]))
+    token = registration["approval_token"]
+    if tamper == "compatibility":
+        preview["compatibility"]["action"] = "keep-registration"
+    elif tamper == "writes":
+        preview["writes"][0]["sha256"] = "0" * 64
+    else:
+        token = "0" * 64
+    config = vault / ".mcp.json"
+    before = config.read_bytes()
+
+    with pytest.raises(bridge.BridgeError, match="approval does not match"):
+        adapter.execute_approved_mcp_registration(vault, preview, token)
+
+    assert config.read_bytes() == before
+
+
+def test_v1201_compatibility_refuses_changed_private_foundation_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, vault, _original = _configured_v1201_compatibility_adapter(tmp_path)
+    monkeypatch.setattr(adapter, "_v1201_origin_is_proven", lambda _root: True)
+    monkeypatch.setattr(bridge, "_optional_qmd_executable", lambda: None)
+    monkeypatch.setattr(
+        lifecycle_service,
+        "_canonical",
+        lambda value, unexpected=None: b"changed private signature",
+    )
+    config = vault / ".mcp.json"
+    before = config.read_bytes()
+
+    with pytest.raises(bridge.BridgeError, match="transaction API changed"):
+        adapter.build_and_preview_mcp_registration(vault)
+
+    assert config.read_bytes() == before
+
+
+def test_v1201_bridge_keeps_changed_qmd_registration_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, _engine, vault, _migrator = _foundation_topology_adapter(tmp_path)
+    adapter._service = lifecycle_service
+    subprocess.run(["git", "init", "--quiet"], cwd=vault, check=True)
+    subprocess.run(["git", "config", "user.name", "Dex Tests"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=vault,
+        check=True,
+    )
+    changed_qmd = {"command": "qmd", "args": ["serve", "--changed"]}
+    (vault / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"qmd": changed_qmd}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".mcp.json"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "changed MCP config"],
+        cwd=vault,
+        check=True,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_v1201_origin_is_proven",
+        lambda _root: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_optional_qmd_executable",
+        lambda: None,
+        raising=False,
+    )
+
+    registration = adapter.build_and_preview_mcp_registration(vault)
+    assert registration["preview"]["registration"]["action"] == "add-only"
+    assert "compatibility" not in registration["preview"]
+
+    adapter.execute_approved_mcp_registration(
+        vault,
+        registration["preview"],
+        registration["approval_token"],
+    )
+    updated = json.loads((vault / ".mcp.json").read_text(encoding="utf-8"))
+    assert updated["mcpServers"]["qmd"] == changed_qmd
+
+
+def test_v1201_bridge_preserves_exact_qmd_registration_when_qmd_is_installed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, _engine, vault, _migrator = _foundation_topology_adapter(tmp_path)
+    adapter._service = lifecycle_service
+    subprocess.run(["git", "init", "--quiet"], cwd=vault, check=True)
+    subprocess.run(["git", "config", "user.name", "Dex Tests"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=vault,
+        check=True,
+    )
+    qmd = tmp_path / "bin" / "qmd"
+    qmd.parent.mkdir()
+    qmd.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    qmd.chmod(0o755)
+    exact_qmd = {"command": "qmd", "args": ["mcp"]}
+    (vault / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"qmd": exact_qmd}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".mcp.json"], cwd=vault, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "working qmd config"],
+        cwd=vault,
+        check=True,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_v1201_origin_is_proven",
+        lambda _root: True,
+        raising=False,
+    )
+    monkeypatch.setattr(bridge, "_optional_qmd_executable", lambda: qmd)
+
+    registration = adapter.build_and_preview_mcp_registration(vault)
+    assert registration["preview"]["registration"]["action"] == "add-only"
+    assert "compatibility" not in registration["preview"]
+
+    adapter.execute_approved_mcp_registration(
+        vault,
+        registration["preview"],
+        registration["approval_token"],
+    )
+    updated = json.loads((vault / ".mcp.json").read_text(encoding="utf-8"))
+    assert updated["mcpServers"]["qmd"] == exact_qmd
 
 
 def test_legacy_topology_requires_exact_tag_commit_tree_and_current_ancestry(
@@ -328,7 +952,17 @@ def test_foundation_service_uses_verified_migrator_for_exact_legacy_topology_onl
     service, engine, vault, migrator = _foundation_topology_adapter(tmp_path)
     original_state = engine.topology_state
     original_command = engine._migrator_command
-    monkeypatch.setattr(bridge, "_supported_legacy_topology", lambda _root: True)
+    authorization = bridge.LegacyTopologyAuthorization(
+        "absent-inputs",
+        bridge.LEGACY_TOPOLOGY_FOUNDATION,
+        None,
+        "absent",
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_legacy_topology_authorization",
+        lambda _root: authorization,
+    )
     monkeypatch.setattr(
         bridge,
         "_trusted_executable",
@@ -345,7 +979,7 @@ def test_foundation_service_uses_verified_migrator_for_exact_legacy_topology_onl
     command_prefix = [
         "/trusted/node",
         "--require",
-        str(service._preload),
+        str(service._preload_for_authorization(authorization)),
         str(migrator),
     ]
     assert preview == {
@@ -419,7 +1053,17 @@ if (
             return engine._run_topology_migrator(vault_root, "--dry-run")
 
     service._service = RunningService()
-    monkeypatch.setattr(bridge, "_supported_legacy_topology", lambda _root: True)
+    authorization = bridge.LegacyTopologyAuthorization(
+        "absent-inputs",
+        bridge.LEGACY_TOPOLOGY_FOUNDATION,
+        None,
+        "absent",
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_legacy_topology_authorization",
+        lambda _root: authorization,
+    )
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "https")
     parent_environment = bridge._bridge_environment()
     parent_attempt = subprocess.run(
@@ -455,7 +1099,7 @@ def test_foundation_service_keeps_unknown_or_ambiguous_topology_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, _engine, vault, _migrator = _foundation_topology_adapter(tmp_path)
-    monkeypatch.setattr(bridge, "_supported_legacy_topology", lambda _root: False)
+    monkeypatch.setattr(bridge, "_legacy_topology_authorization", lambda _root: None)
     monkeypatch.setattr(
         bridge,
         "_trusted_executable",
@@ -476,7 +1120,11 @@ def test_foundation_service_does_not_bypass_an_unsafe_vault_migrator(
     candidate = vault / bridge._TOPOLOGY_MIGRATOR_RELATIVE
     candidate.parent.mkdir(parents=True)
     candidate.symlink_to(migrator)
-    monkeypatch.setattr(bridge, "_supported_legacy_topology", lambda _root: True)
+    monkeypatch.setattr(
+        bridge,
+        "_legacy_topology_authorization",
+        lambda _root: pytest.fail("unsafe migrator must be rejected before authorization"),
+    )
 
     assert service.build_and_preview_topology_migration(vault) == {
         "topology": "invalid-combined",
@@ -667,13 +1315,63 @@ def test_foundation_service_refuses_compatibility_preload_changed_after_verifica
         service.build_and_preview_topology_migration(vault)
 
 
-def test_foundation_service_exposes_release_delivery(tmp_path: Path) -> None:
+def test_foundation_service_exposes_enveloped_release_delivery_with_formal_budget(
+    tmp_path: Path,
+) -> None:
     service, _engine, vault, _migrator = _foundation_topology_adapter(tmp_path)
+    calls: list[tuple[Path, dict[str, object]]] = []
+
+    def deliver(vault_root: Path, **kwargs: object) -> dict[str, object]:
+        calls.append((vault_root, kwargs))
+        return {
+            "status": "not-delivered",
+            "evidence": {"status": "UNKNOWN", "reason": "evidence-invalid"},
+        }
+
+    service._apply_update.deliver_latest_release = deliver
 
     assert service.deliver_latest_release(vault) == {
-        "status": "delivered",
-        "vault": str(vault),
+        "api_version": "1.0.0",
+        "status": "not-delivered",
+        "evidence": {"status": "UNKNOWN", "reason": "evidence-invalid"},
     }
+    assert calls == [
+        (vault, {"wall_clock_seconds": 60.0}),
+    ]
+
+
+def test_foundation_service_routes_only_explicit_test_delivery_to_local_cache(
+    tmp_path: Path,
+) -> None:
+    service, _engine, vault, _migrator = _foundation_topology_adapter(tmp_path)
+    calls: list[tuple[Path, dict[str, object]]] = []
+
+    def deliver(vault_root: Path, **kwargs: object) -> dict[str, object]:
+        calls.append((vault_root, kwargs))
+        return {"status": "delivered-from-cache"}
+
+    service._apply_update.deliver_latest_release = deliver
+    cache = tmp_path / "candidate-release.git"
+
+    assert service.deliver_latest_release(
+        vault,
+        remote_url=str(cache),
+        allow_test_transport=True,
+    ) == {"status": "delivered-from-cache"}
+    assert calls == [
+        (
+            vault,
+            {
+                "remote_url": str(cache),
+                "allow_test_transport": True,
+                "wall_clock_seconds": 60.0,
+            },
+        )
+    ]
+    with pytest.raises(bridge.BridgeError, match="explicit local cache"):
+        service.deliver_latest_release(vault, remote_url=str(cache))
+    with pytest.raises(bridge.BridgeError, match="explicit local cache"):
+        service.deliver_latest_release(vault, allow_test_transport=True)
 
 
 def test_foundation_service_reports_missing_engine_path_as_bridge_error(
@@ -711,9 +1409,13 @@ def test_legacy_delivery_reader_accepts_only_the_pinned_pre_manifest_tree(
     TreeEntry = namedtuple("TreeEntry", ("path", "mode", "object_id"))
     classified_oid = "1" * 40
     retired_oid = "2" * 40
+    omission_a_oid = "3" * 40
+    omission_b_oid = "4" * 40
     records = (
         f"100644 blob {classified_oid}\tCLAUDE.md\0"
         f"100644 blob {retired_oid}\tretired-release-path.txt\0"
+        f"100644 blob {omission_a_oid}\tclosed-omission-a\0"
+        f"100644 blob {omission_b_oid}\tclosed-omission-b\0"
         f"120000 blob {bridge._LEGACY_SHIPPED_SYMLINK_BLOB}\t"
         f"{bridge._LEGACY_SHIPPED_SYMLINK_RELATIVE.as_posix()}\0"
     ).encode()
@@ -735,6 +1437,20 @@ def test_legacy_delivery_reader_accepts_only_the_pinned_pre_manifest_tree(
     apply_update.portable_contract.resolve = resolve
     apply_update.TreeEntry = TreeEntry
     apply_update._brain_output = brain_output
+    original_omission_identity = bridge._manifestless_omission_identity
+    omission_identities = {
+        "closed-omission-a": "af78f3d480b78b5bb558d873b98638c91d532de98f84f8f50e73448a1404b37d",
+        "closed-omission-b": "50a3e65dc2d65e6f6b28b30b630e06656d95ddd82f4a68a7152017119b110f90",
+    }
+
+    def omission_identity(relative: str, raw_mode: str, object_id: str) -> str:
+        if relative in omission_identities:
+            assert raw_mode == "100644"
+            assert object_id in {omission_a_oid, omission_b_oid}
+            return omission_identities[relative]
+        return original_omission_identity(relative, raw_mode, object_id)
+
+    monkeypatch.setattr(bridge, "_manifestless_omission_identity", omission_identity)
 
     def original_tree_entries(*_arguments):
         pytest.fail("exact legacy commit should use the compatibility reader")

@@ -23,7 +23,11 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _repository_with_remote_tags(tmp_path: Path, *tags: str) -> Path:
+def _repository_with_remote_tags(
+    tmp_path: Path,
+    *tags: str,
+    package_version: str = "9.9.9",
+) -> Path:
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", str(remote)],
@@ -38,7 +42,10 @@ def _repository_with_remote_tags(tmp_path: Path, *tags: str) -> Path:
     _git(repository, "config", "user.name", "Dex Tests")
     _git(repository, "config", "user.email", "tests@example.com")
     (repository / "README.md").write_text("# Fixture\n", encoding="utf-8")
-    _git(repository, "add", "README.md")
+    (repository / "package.json").write_text(
+        f'{{"version":"{package_version}"}}\n', encoding="utf-8"
+    )
+    _git(repository, "add", "README.md", "package.json")
     _git(repository, "commit", "-m", "fixture")
     _git(repository, "remote", "add", "origin", str(remote))
 
@@ -122,26 +129,8 @@ def _newer_release_tags(count: int) -> tuple[str, ...]:
     )
 
 
-def test_reachability_gate_passes_below_safety_margin(tmp_path: Path) -> None:
-    repository = _repository_with_remote_tags(
-        tmp_path,
-        *_newer_release_tags(25),
-    )
-
-    result = subprocess.run(
-        ["bash", str(REACHABILITY_GATE)],
-        cwd=repository,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Release-tag reachability gate passed." in result.stdout
-
-
-@pytest.mark.parametrize("newer_count", (26, 27))
-def test_reachability_gate_fails_at_or_above_safety_margin(
+@pytest.mark.parametrize("newer_count", (26, 30))
+def test_reachability_gate_passes_with_at_least_two_shipped_slots_remaining(
     tmp_path: Path,
     newer_count: int,
 ) -> None:
@@ -158,13 +147,139 @@ def test_reachability_gate_fails_at_or_above_safety_margin(
         text=True,
     )
 
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Release-tag reachability gate passed." in result.stdout
+
+
+def test_reachability_gate_fails_at_31_when_current_version_is_unpublished(
+    tmp_path: Path,
+) -> None:
+    repository = _repository_with_remote_tags(
+        tmp_path,
+        *_newer_release_tags(31),
+    )
+
+    result = subprocess.run(
+        ["bash", str(REACHABILITY_GATE)],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "current package version v9.9.9 is not published" in result.stderr
+    assert "the pre-publication safety margin is 31" in result.stderr
+
+
+def test_reachability_gate_allows_31_when_current_version_is_already_published(
+    tmp_path: Path,
+) -> None:
+    repository = _repository_with_remote_tags(
+        tmp_path,
+        *_newer_release_tags(31),
+        package_version="1.105.0",
+    )
+
+    result = subprocess.run(
+        ["bash", str(REACHABILITY_GATE)],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Release-tag reachability gate passed." in result.stdout
+
+
+def test_reachability_gate_allows_31_for_beta_prerelease_version(
+    tmp_path: Path,
+) -> None:
+    repository = _repository_with_remote_tags(
+        tmp_path,
+        *_newer_release_tags(31),
+        package_version="1.82.0-beta.1",
+    )
+
+    result = subprocess.run(
+        ["bash", str(REACHABILITY_GATE)],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Release-tag reachability gate passed." in result.stdout
+
+
+def test_reachability_gate_fails_at_32_for_beta_prerelease_version(
+    tmp_path: Path,
+) -> None:
+    repository = _repository_with_remote_tags(
+        tmp_path,
+        *_newer_release_tags(32),
+        package_version="1.82.0-beta.1",
+    )
+
+    result = subprocess.run(
+        ["bash", str(REACHABILITY_GATE)],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "the shipped verifier bound is 32" in result.stderr
+
+
+def test_reachability_gate_fails_closed_for_malformed_prerelease_version(
+    tmp_path: Path,
+) -> None:
+    repository = _repository_with_remote_tags(
+        tmp_path,
+        *_newer_release_tags(30),
+        package_version="1.82.0-beta!1",
+    )
+
+    result = subprocess.run(
+        ["bash", str(REACHABILITY_GATE)],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "not a supported stable or prerelease semantic version" in result.stderr
+
+
+def test_reachability_gate_fails_at_32_even_when_current_version_is_published(
+    tmp_path: Path,
+) -> None:
+    repository = _repository_with_remote_tags(
+        tmp_path,
+        *_newer_release_tags(32),
+        package_version="1.106.0",
+    )
+
+    result = subprocess.run(
+        ["bash", str(REACHABILITY_GATE)],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
     assert result.returncode == 1
     for sentinel in ("1.62.0", "1.68.0", "1.74.0"):
         assert (
-            f"v{sentinel} has {newer_count} newer dist/release tags"
+            f"v{sentinel} has 32 newer dist/release tags"
             in result.stderr
         )
-    assert "dist/archive/*" in result.stderr
+    assert "the shipped verifier bound is 32" in result.stderr
 
 
 def test_reachability_gate_fails_loudly_when_remote_tags_are_unreadable(

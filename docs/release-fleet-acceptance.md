@@ -101,8 +101,108 @@ Markdown `/dex-update` instructions into an API.
 ```bash
 python3 scripts/release_fleet.py journey --repo . --output "$fleet_root" \
   --starting-tag dist/release/v1.74.0-EXACTSTART \
-  --foundation-tag dist/release/v1.81.0-EXACTFOUNDATION \
-  --follow-up-tag dist/release/v1.81.5-EXACTFOLLOWUP
+  --foundation-tag dist/release/v1.81.16-281202d \
+  --follow-up-tag dist/release/v1.81.17-EXACTFOLLOWUP \
+  --bridge-asset /path/to/dex-update-bridge-v1.81.17.py \
+  --bridge-checksum /path/to/dex-update-bridge-v1.81.17.py.sha256
+```
+
+Historic semantic `v*` starting tags have a narrower evidence-only rule. Their
+tag object, commit, tree, version, and channel identity remain exact. When Git
+positively confirms that `System/.release-catalog.json` is absent, the runner
+may record a valid journey protocol only after its runner, executor, and bridge
+hashes match the exact semantic source commit. That surface is labelled
+`present-unbound` and `machine_executable: false`; it cannot grant execution
+authority or substitute a similarly versioned distribution package. A catalog
+that exists but is malformed or unreadable fails closed, as does any source
+hash mismatch. Immutable journey targets, including the foundation and
+follow-up, never receive this evidence exception: their release catalogs and
+publisher-source bindings remain mandatory.
+
+The bridge paths must be the separately downloaded GitHub Release asset and
+its checksum. The runner verifies their exact names, checksum, protocol digest,
+and released source bytes before it creates the fixture. A bridge available
+only in the controller checkout cannot satisfy this gate.
+
+The formal macOS fleet controller takes that same asset pair explicitly and
+re-proves it against the immutable follow-up protocol before it creates its
+private run directory or starts a journey. The follow-up tag must be the exact
+public stable `dist/release/v*` tag that the foundation updater will deliver.
+The controller first proves that the canonical public remote advertises that
+exact annotated tag object. It then makes an anonymous GET to GitHub's canonical
+`/davekilleen/Dex/releases/latest` route and accepts exactly one HTTPS redirect
+to the exact canonical `/davekilleen/Dex/releases/tag/v<version>` URL followed
+by HTTP 200. A missing or additional redirect, an off-host or non-HTTPS hop, any
+variation in host, repository, path, case, port, user information, query,
+fragment, encoding, prefix, suffix, or trailing slash, or an unavailable route
+fails closed. This proof uses no API token, local cache, retry-based acceptance,
+or HTML parsing. The controller then downloads the published bridge and
+checksum from that release and compares both byte-for-byte to the submitted
+pair. Neither a local tag nor a controller copy of the bridge can stand in for
+it.
+
+The first-party `historic-fleet-darwin` GitHub Actions workflow is the release
+operator for this gate. Its formal job is manual: after the updater change is
+merged and the follow-up GitHub Release is public, provide the exact immutable
+foundation and follow-up tags. The job refreshes the public tags, freezes the
+cohort, downloads and verifies the public bridge pair, and runs all starts
+sequentially on macOS. It retains the evidence and exact
+discovered/started/completed/passed/failed counts on both success and failure.
+The job is time-bounded to six hours and monitors a 50 GiB working-set limit.
+
+The formal controller continues after an isolated case has crossed the journey
+execution boundary and then fails. It retains every such failure in
+`platform-failures.json`, groups matching diagnostics by a stable signature, and
+finishes the frozen cohort before returning a non-zero result. This lets one
+exhaustive run expose all version-specific failure families instead of stopping
+at the first one. A shared protocol, released-identity, public-route, evidence,
+runtime, filesystem, disk-budget, or other infrastructure/integrity failure
+still stops the job immediately. A collected failure report is diagnostic
+evidence only: it cannot mint a platform receipt or acceptance result. If the
+exhaustive run has no failures, its ordinary receipt remains valid acceptance
+evidence; otherwise all grouped fixes need targeted proof before one final full
+acceptance run.
+
+Pull requests that touch the updater route get a separate non-publishing
+macOS canary. It builds a local release-shaped candidate and runs real journeys
+from these exact seven starts:
+
+- semantic `v1.51.0`;
+- `dist/release/v1.61.0-dc7d332`;
+- `dist/archive/v1.61.0-1ec1387`;
+- semantic `v1.62.0`;
+- `dist/archive/v1.63.0-08ce719`;
+- `dist/archive/v1.65.0-c5ec161`; and
+- `dist/archive/v1.76.0-d0bb932`.
+
+These journeys cover the old dependency fixture, split-topology and retired
+manifest variants, archived releases, and the recent Mac final-fetch path
+before merge. They remain explicitly non-acceptance evidence and cannot replace
+the freshly generated public fleet.
+
+Within a journey, the foundation updater proves the exact follow-up identity
+before its final fetch into the private brain store. If and only if that final
+fetch raises `OfflineError`, the updater waits for the fixed 100 ms backoff and
+retries once. The sole retry receives a fresh bounded five-second attempt and
+uses the same proved tag and channel refspecs and the same remote URL. After a
+successful fetch, the updater rechecks the fetched tag object, commit, tree,
+channel target, manifest, and package metadata against the proved identity
+before it can return a preview.
+
+Evidence, topology, origin, identity, cancellation, filesystem, and all other
+non-offline failures are not retried. A second `OfflineError` fails closed.
+This is not a retry of the controller's public-route proof above, and this
+bounded transport retry does not make the PR canary acceptance evidence.
+
+```bash
+python3 scripts/release_fleet_acceptance.py platform --repo . \
+  --cohort historic-cohort.json \
+  --foundation-tag dist/release/v1.81.16-281202d \
+  --follow-up-tag dist/release/v1.81.17-EXACTFOLLOWUP \
+  --session acceptance-session.json --key acceptance.key \
+  --bridge-asset /path/to/dex-update-bridge-v1.81.17.py \
+  --bridge-checksum /path/to/dex-update-bridge-v1.81.17.py.sha256 \
+  --output "$fleet_root/darwin"
 ```
 
 The repository has the canonical protocol source at
@@ -139,10 +239,10 @@ constructing the same documents cannot unlock acceptance. The resulting
 content-addressed manifest records the exact executor identity, release
 identities, ordered operations, and artifact hashes.
 
-The protocol and executor were published with the v1.81.0 foundation. That
-publication is one prerequisite, not fleet acceptance: the real follow-up
-release must exist and every historic case must still complete the two-hop
-journey on macOS.
+The v1.81.17 protocol and executor pin the exact public v1.81.16 foundation.
+That publication is one prerequisite, not fleet acceptance: the distinct
+follow-up release must exist and every historic case must still complete the
+two-hop journey on macOS.
 
 ## Validate the finished evidence
 

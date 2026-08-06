@@ -18,7 +18,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -31,6 +31,7 @@ from core.update.journey_protocol import (
     UpdateJourneyProtocol,
     load_update_journey_protocol,
 )
+from scripts import dex_update_bridge
 
 UPDATE_JOURNEY_RELATIVE = PROTOCOL_RELATIVE
 RELEASE_TAG = re.compile(
@@ -120,6 +121,7 @@ TRUSTED_PYTHON_ROOTS = (Path("/opt/homebrew"),)
 MINIMUM_SUPPORTED_PYTHON = (3, 10)
 PROCESS_GROUP_TERMINATION_GRACE_SECONDS = 1.0
 FIXTURE_REQUIRED_PYTHON_DEPENDENCIES = ("mcp", "yaml")
+PRE_BRIDGE_REQUIRED_PYTHON_DEPENDENCIES = ("yaml",)
 SEALED_INSTALLER_ENVIRONMENT_KEYS = frozenset(
     {
         "HOME",
@@ -157,6 +159,19 @@ print(json.dumps({
 
 class FleetError(RuntimeError):
     """The historic release fleet could not be built safely."""
+
+
+class CaseJourneyFailure(FleetError):
+    """One isolated historic journey failed after case execution began."""
+
+    def __init__(self, starting_tag: str, detail: str) -> None:
+        if not isinstance(starting_tag, str) or not starting_tag:
+            raise ValueError("case journey failure requires a starting tag")
+        if not isinstance(detail, str) or not detail:
+            raise ValueError("case journey failure requires a detail")
+        super().__init__(f"{starting_tag}: {detail}")
+        self.starting_tag = starting_tag
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -378,6 +393,23 @@ def _tag_file(repo: Path, tag: str, relative: str) -> bytes:
     return result.stdout
 
 
+def _tag_file_if_present(repo: Path, tag: str, relative: str) -> bytes | None:
+    """Read one tag path, distinguishing confirmed absence from Git failure."""
+
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-z", tag, "--", relative],
+        capture_output=True,
+    )
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise FleetError(
+            detail or f"{tag}: could not inspect required publication path {relative}"
+        )
+    if not result.stdout:
+        return None
+    return _tag_file(repo, tag, relative)
+
+
 def _strict_object(source: bytes, context: str, keys: frozenset[str]) -> dict[str, object]:
     try:
         value = json.loads(source)
@@ -413,14 +445,15 @@ def _released_protocol_source_commit(repo: Path, tag: str) -> str:
     return source_commit
 
 
-def _verify_released_protocol_artifacts(
+def _verify_protocol_source_artifacts(
     repo: Path,
-    release: DistributionRelease | ImmutableRelease,
+    *,
+    release_tag: str,
+    source_commit: str,
     protocol: UpdateJourneyProtocol,
-) -> str:
-    """Bind protocol adapters to the exact publisher source commit bytes."""
+) -> None:
+    """Prove protocol adapter hashes against one exact source commit."""
 
-    source_commit = _released_protocol_source_commit(repo, release.tag)
     for label, artifact in (
         ("fleet runner", protocol.runner),
         ("journey executor", protocol.executor),
@@ -430,13 +463,55 @@ def _verify_released_protocol_artifacts(
             source = _tag_file(repo, source_commit, artifact.source_path)
         except FleetError as error:
             raise FleetError(
-                f"{release.tag}: released journey {label} source is unavailable"
+                f"{release_tag}: released journey {label} source is unavailable"
             ) from error
         if hashlib.sha256(source).hexdigest() != artifact.sha256:
             raise FleetError(
-                f"{release.tag}: released journey {label} does not match its protocol hash"
+                f"{release_tag}: released journey {label} does not match its protocol hash"
             )
+
+
+def _verify_released_protocol_artifacts(
+    repo: Path,
+    release: DistributionRelease | ImmutableRelease,
+    protocol: UpdateJourneyProtocol,
+) -> str:
+    """Bind protocol adapters to the exact publisher source commit bytes."""
+
+    source_commit = _released_protocol_source_commit(repo, release.tag)
+    _verify_protocol_source_artifacts(
+        repo,
+        release_tag=release.tag,
+        source_commit=source_commit,
+        protocol=protocol,
+    )
     return source_commit
+
+
+def _unbound_semantic_protocol_source(
+    repo: Path,
+    release: DistributionRelease | ImmutableRelease,
+    protocol: UpdateJourneyProtocol,
+) -> str | None:
+    """Prove catalog-less semantic bytes without granting execution authority."""
+
+    pinned = dex_update_bridge.exact_unbound_journey_source(repo, release.tag)
+    if pinned is not None:
+        return pinned
+    if release.tag == dex_update_bridge.V181_UNBOUND_JOURNEY_SOURCE.release.tag:
+        return None
+    if LEGACY_RELEASE_TAG.fullmatch(release.tag) is None:
+        return None
+    catalog = _tag_file_if_present(repo, release.tag, "System/.release-catalog.json")
+    if catalog is not None:
+        return None
+    _verify_protocol_source_artifacts(
+        repo,
+        release_tag=release.tag,
+        source_commit=release.commit,
+        protocol=protocol,
+    )
+    return release.commit
 
 
 def shipped_update_surface(repo: Path, release: DistributionRelease | ImmutableRelease) -> dict[str, object]:
@@ -474,6 +549,7 @@ def shipped_update_surface(repo: Path, release: DistributionRelease | ImmutableR
         "controller": None,
         "executor": None,
     }
+    unbound_source: str | None = None
     if protocol_bytes is not None:
         try:
             protocol = load_update_journey_protocol(protocol_bytes)
@@ -481,10 +557,13 @@ def shipped_update_surface(repo: Path, release: DistributionRelease | ImmutableR
             raise FleetError(
                 f"{release.tag}: released journey protocol is invalid: {error}"
             ) from error
-        source_commit = _verify_released_protocol_artifacts(repo, release, protocol)
+        unbound_source = _unbound_semantic_protocol_source(repo, release, protocol)
+        source_commit = unbound_source or _verify_released_protocol_artifacts(
+            repo, release, protocol
+        )
         protocol_surface = {
             "path": UPDATE_JOURNEY_RELATIVE,
-            "status": "present",
+            "status": "present-unbound" if unbound_source else "present",
             "sha256": hashlib.sha256(protocol_bytes).hexdigest(),
             "schema_version": protocol.schema_version,
             "controller": protocol.controller,
@@ -513,7 +592,7 @@ def shipped_update_surface(repo: Path, release: DistributionRelease | ImmutableR
         "journey_protocol": protocol_surface,
         # This describes released capability, not successful execution.
         # Acceptance still requires a live, process-local ExecutorRun.
-        "machine_executable": protocol_bytes is not None,
+        "machine_executable": protocol_bytes is not None and unbound_source is None,
     }
 
 
@@ -669,8 +748,13 @@ def resolve_trusted_python_runtime() -> PythonRuntime:
     raise FleetError("no trusted supported Python runtime is available: " + "; ".join(errors))
 
 
-def resolve_fixture_python(vault: Path, *, trusted_python: PythonRuntime) -> FixturePython:
-    """Prove Doctor's interpreter and dependencies belong to one real fixture venv."""
+def resolve_fixture_python(
+    vault: Path,
+    *,
+    trusted_python: PythonRuntime,
+    required_dependencies: Sequence[str] = FIXTURE_REQUIRED_PYTHON_DEPENDENCIES,
+) -> FixturePython:
+    """Prove a fixture interpreter and the phase-required dependencies are local."""
 
     venv_root = vault / ".venv"
     requested_python = venv_root / "bin" / "python"
@@ -736,7 +820,7 @@ def resolve_fixture_python(vault: Path, *, trusted_python: PythonRuntime) -> Fix
     if not isinstance(raw_dependencies, Mapping):
         raise FleetError("fixture venv dependency provenance was malformed")
     dependency_origins: list[tuple[str, str]] = []
-    for dependency in FIXTURE_REQUIRED_PYTHON_DEPENDENCIES:
+    for dependency in required_dependencies:
         origin = raw_dependencies.get(dependency)
         if not isinstance(origin, str) or not origin:
             raise FleetError(f"fixture venv dependency is unavailable: {dependency}")
@@ -1464,6 +1548,28 @@ def _installer_created_split_topology(vault: Path) -> bool:
     )
 
 
+def _initial_install_evidence(
+    vault: Path, environment: Mapping[str, str]
+) -> dict[str, object]:
+    """Prove a package-created split brain has never-fetched ref shape."""
+
+    if not _installer_created_split_topology(vault):
+        return {"topology": "legacy-monolithic", "brain_refs": []}
+    refs_output = _git_directory(
+        vault / ".dex/brain.git",
+        "for-each-ref",
+        "--format=%(refname)",
+        environment=environment,
+    )
+    refs = sorted(line for line in refs_output.splitlines() if line)
+    allowed = {"refs/dex/installed", "refs/heads/release"}
+    if "refs/dex/installed" not in refs or any(ref not in allowed for ref in refs):
+        raise FleetError(
+            "clean split package fixture must begin without tags or remote-tracking refs"
+        )
+    return {"topology": "brain-vault-split", "brain_refs": refs}
+
+
 def _run_historic_installer(
     vault: Path,
     release: DistributionRelease,
@@ -1602,6 +1708,7 @@ def classify_historic_update_surface(repo: Path, release: DistributionRelease) -
         repo, release.tag, "core/lifecycle/catalog/bridge-release.json"
     )
     protocol = _optional_tag_file(repo, release.tag, UPDATE_JOURNEY_RELATIVE)
+    unbound_source: str | None = None
     if protocol is not None:
         try:
             parsed_protocol = load_update_journey_protocol(protocol)
@@ -1609,9 +1716,16 @@ def classify_historic_update_surface(repo: Path, release: DistributionRelease) -
             raise FleetError(
                 f"{release.tag}: released journey protocol is invalid: {error}"
             ) from error
-        _verify_released_protocol_artifacts(repo, release, parsed_protocol)
-        route = "machine-protocol-released-executor"
-        bridge_requirement = "released-journey-executor"
+        unbound_source = _unbound_semantic_protocol_source(
+            repo, release, parsed_protocol
+        )
+        if unbound_source is None:
+            _verify_released_protocol_artifacts(repo, release, parsed_protocol)
+            route = "machine-protocol-released-executor"
+            bridge_requirement = "released-journey-executor"
+        else:
+            route = "protocol-present-unbound-source"
+            bridge_requirement = "versioned-delivery-bridge-required"
     elif skill is None:
         route = "missing-dex-update-skill"
         bridge_requirement = "unsupported-without-published-route"
@@ -1627,7 +1741,7 @@ def classify_historic_update_surface(repo: Path, release: DistributionRelease) -
     return {
         "route_classification": route,
         "bridge_requirement": bridge_requirement,
-        "machine_executable": protocol is not None,
+        "machine_executable": protocol is not None and unbound_source is None,
         "dex_update_skill": {
             "path": UPDATE_SKILL_RELATIVE,
             "status": "present" if skill is not None else "missing",
@@ -1992,6 +2106,70 @@ def run_discovery_sweep(
     }
 
 
+def _verify_standalone_bridge_asset(
+    repo: Path,
+    *,
+    source_commit: str,
+    follow_up: ImmutableRelease,
+    protocol: UpdateJourneyProtocol,
+    bridge_asset: Path | None,
+    bridge_checksum: Path | None,
+) -> dict[str, str]:
+    """Bind acceptance to the separately distributable release bridge."""
+
+    if bridge_asset is None or bridge_checksum is None:
+        raise FleetError("standalone released bridge asset is required")
+    expected_asset_name = f"dex-update-bridge-v{follow_up.version}.py"
+    expected_checksum_name = f"{expected_asset_name}.sha256"
+    if bridge_asset.name != expected_asset_name or bridge_checksum.name != expected_checksum_name:
+        raise FleetError("standalone released bridge asset names do not match follow-up release")
+    for label, path in (("bridge asset", bridge_asset), ("bridge checksum", bridge_checksum)):
+        if path.is_symlink() or not path.is_file():
+            raise FleetError(f"standalone released {label} is missing or unsafe")
+    bridge_bytes = bridge_asset.read_bytes()
+    bridge_digest = hashlib.sha256(bridge_bytes).hexdigest()
+    checksum_bytes = bridge_checksum.read_bytes()
+    expected_checksum = f"{bridge_digest}  {expected_asset_name}\n".encode("utf-8")
+    if checksum_bytes != expected_checksum:
+        raise FleetError("standalone released bridge checksum is invalid")
+    released_bridge = _tag_file(repo, source_commit, protocol.bridge.artifact.source_path)
+    if bridge_digest != protocol.bridge.artifact.sha256 or bridge_bytes != released_bridge:
+        raise FleetError("standalone released bridge does not match released journey source")
+    return {
+        "name": expected_asset_name,
+        "sha256": bridge_digest,
+        "checksum_name": expected_checksum_name,
+        "checksum_sha256": hashlib.sha256(checksum_bytes).hexdigest(),
+        "source": "released-standalone-asset",
+    }
+
+
+def run_case_executor(
+    starting_tag: str,
+    executor: Callable[..., object],
+    /,
+    **kwargs: object,
+) -> object:
+    """Collect only a failure from an executor that crossed the case boundary."""
+
+    from scripts import release_fleet_executor
+
+    case_execution_started = False
+
+    def mark_case_execution_started() -> None:
+        nonlocal case_execution_started
+        case_execution_started = True
+
+    try:
+        return executor(_case_started=mark_case_execution_started, **kwargs)
+    except release_fleet_executor.PublicRouteDriftError:
+        raise
+    except release_fleet_executor.ExecutorError as error:
+        if not case_execution_started:
+            raise
+        raise CaseJourneyFailure(starting_tag, str(error)) from error
+
+
 def run_journey(
     repo: Path,
     *,
@@ -1999,6 +2177,10 @@ def run_journey(
     starting_tag: str,
     foundation_tag: str,
     follow_up_tag: str,
+    bridge_asset: Path | None = None,
+    bridge_checksum: Path | None = None,
+    controlled_approvals: bool = False,
+    follow_up_cache: Path | None = None,
 ) -> object:
     """Build one fixture and delegate the closed journey to its released executor."""
 
@@ -2025,18 +2207,35 @@ def run_journey(
         raise FleetError(f"follow-up released journey protocol is invalid: {error}") from error
     if protocol.foundation != foundation.identity():
         raise FleetError("released journey protocol names a different foundation")
+    approval_input: Callable[[str], str] | None = None
+    if controlled_approvals:
+        bridge_word = protocol.bridge.approval_word
+        follow_up_word = protocol.follow_up.approval_word
+        if bridge_word != follow_up_word:
+            raise FleetError("controlled fleet approvals require one exact protocol word")
+
+        def approve_disposable_fixture(prompt: str) -> str:
+            if not isinstance(prompt, str) or not prompt:
+                raise FleetError("controlled fleet approval prompt is invalid")
+            return bridge_word
+
+        approval_input = approve_disposable_fixture
     source_commit = _verify_released_protocol_artifacts(repo, follow_up, protocol)
+    bridge_asset_evidence = _verify_standalone_bridge_asset(
+        repo,
+        source_commit=source_commit,
+        follow_up=follow_up,
+        protocol=protocol,
+        bridge_asset=bridge_asset,
+        bridge_checksum=bridge_checksum,
+    )
+    assert bridge_asset is not None
     for label, artifact, running_path in (
         ("fleet runner", protocol.runner, Path(__file__).resolve()),
         (
             "journey executor",
             protocol.executor,
             PROJECT_ROOT / protocol.executor.source_path,
-        ),
-        (
-            "foundation bridge",
-            protocol.bridge.artifact,
-            PROJECT_ROOT / protocol.bridge.artifact.source_path,
         ),
     ):
         running = running_path.read_bytes()
@@ -2078,7 +2277,12 @@ def run_journey(
             environment=environment,
             keep_official_fetch=True,
         )
-        resolve_fixture_python(case.vault, trusted_python=python_runtime)
+        resolve_fixture_python(
+            case.vault,
+            trusted_python=python_runtime,
+            required_dependencies=PRE_BRIDGE_REQUIRED_PYTHON_DEPENDENCIES,
+        )
+        initial_install_evidence = _initial_install_evidence(case.vault, environment)
         from scripts import release_fleet_executor
 
         try:
@@ -2089,7 +2293,9 @@ def run_journey(
                     start,
                     environment,
                 )
-            return release_fleet_executor.execute_journey(
+            return run_case_executor(
+                start.tag,
+                release_fleet_executor.execute_journey,
                 repo_root=repo,
                 source_commit=source_commit,
                 vault_root=case.vault,
@@ -2102,6 +2308,11 @@ def run_journey(
                 foundation_surface=foundation_surface,
                 user_owned_paths=tuple(USER_FIXTURES),
                 platform=journey_platform,
+                bridge_asset_evidence=bridge_asset_evidence,
+                bridge_asset_path=bridge_asset.resolve(strict=True),
+                initial_install_evidence=initial_install_evidence,
+                follow_up_cache=follow_up_cache,
+                **({"input_fn": approval_input} if approval_input is not None else {}),
             )
         finally:
             _disable_all_fixture_remotes(case.vault, environment)
@@ -2301,6 +2512,17 @@ def assert_evidence_bound(
         if event_ids != required_order:
             raise FleetError(f"{case.starting_tag}: evidence manifest has an invalid event order")
         events = {str(event["id"]): event for event in manifest["events"]}
+        bridge_asset_name = f"dex-update-bridge-v{follow_up.version}.py"
+        bridge_checksum_bytes = (
+            f"{protocol.bridge.artifact.sha256}  {bridge_asset_name}\n".encode("utf-8")
+        )
+        expected_bridge_asset = {
+            "name": bridge_asset_name,
+            "sha256": protocol.bridge.artifact.sha256,
+            "checksum_name": f"{bridge_asset_name}.sha256",
+            "checksum_sha256": hashlib.sha256(bridge_checksum_bytes).hexdigest(),
+            "source": "released-standalone-asset",
+        }
         if any(
             not isinstance(event.get("command"), list)
             or not event["command"]
@@ -2319,9 +2541,23 @@ def assert_evidence_bound(
             or events["historic-route-refusal"].get("release") != expected_historic_surface["release"]
             or events["historic-route-refusal"].get("command")
             != [protocol.executor.source_path, "classify-historic-route"]
+            or events["historic-route-refusal"].get("initial_install")
+            not in (
+                {"topology": "legacy-monolithic", "brain_refs": []},
+                {
+                    "topology": "brain-vault-split",
+                    "brain_refs": ["refs/dex/installed"],
+                },
+                {
+                    "topology": "brain-vault-split",
+                    "brain_refs": ["refs/dex/installed", "refs/heads/release"],
+                },
+            )
             or events["bridge-foundation"].get("release") != foundation.identity()
             or events["bridge-foundation"].get("command")
             != [protocol.executor.source_path, protocol.bridge.adapter]
+            or events["bridge-foundation"].get("bridge_asset")
+            != expected_bridge_asset
             or events["foundation-update-surface"].get("release") != foundation.identity()
             or events["foundation-update-surface"].get("command")
             != ["git", "show", f"{foundation.tag}:{UPDATE_SKILL_RELATIVE}"]
@@ -2642,6 +2878,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     journey.add_argument("--starting-tag", required=True)
     journey.add_argument("--foundation-tag", required=True)
     journey.add_argument("--follow-up-tag", required=True)
+    journey.add_argument("--bridge-asset", type=Path, required=True)
+    journey.add_argument("--bridge-checksum", type=Path, required=True)
+    journey.add_argument("--follow-up-cache", type=Path)
+    journey.add_argument(
+        "--controlled-approvals",
+        action="store_true",
+        help="approve only the disposable fixture used by a controlled fleet run",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "manifest":
@@ -2678,6 +2922,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             starting_tag=args.starting_tag,
             foundation_tag=args.foundation_tag,
             follow_up_tag=args.follow_up_tag,
+            bridge_asset=args.bridge_asset,
+            bridge_checksum=args.bridge_checksum,
+            controlled_approvals=args.controlled_approvals,
+            follow_up_cache=args.follow_up_cache,
         )
         print(
             json.dumps(

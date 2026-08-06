@@ -297,6 +297,9 @@ jobs:
     needs: [quality, test-results]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: macos-latest
+    concurrency:
+      group: stable-public-route
+      cancel-in-progress: false
     permissions:
       contents: write
     outputs:
@@ -381,6 +384,8 @@ jobs:
           gh release upload "v$VERSION" \
             "dist/dex-vault-bundle-v$VERSION.tar.gz" \
             "dist/dex-vault-bundle-v$VERSION.tar.gz.sha256" \
+            "dist/dex-update-bridge-v$VERSION.py" \
+            "dist/dex-update-bridge-v$VERSION.py.sha256" \
             --clobber
 
   build-release-beta:
@@ -447,6 +452,8 @@ jobs:
           gh release upload "v$VERSION" \
             "dist/dex-vault-bundle-v$VERSION.tar.gz" \
             "dist/dex-vault-bundle-v$VERSION.tar.gz.sha256" \
+            "dist/dex-update-bridge-v$VERSION.py" \
+            "dist/dex-update-bridge-v$VERSION.py.sha256" \
             --clobber
 
   deploy-health:

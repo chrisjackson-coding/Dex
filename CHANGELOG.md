@@ -7,18 +7,210 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
-## [1.81.19] — 🧭 Doctor adoption counts now match the updater (2026-08-06)
+## [1.81.18] — 🩺 Proactive health summaries (2026-08-05)
 
-Doctor and `/dex-update` were describing the same adoption state with different
-labels. Doctor now reads the lifecycle ledger just like the updater, so an item
-already adopted is reported as **already adopted**, not as newly adoptable.
+Dex used to make it hard to know whether background checks were current without
+asking for a full Doctor run. This release keeps the latest complete health
+summary visible while keeping session starts calm.
+
+**What this changes for you:**
+
+* **Health summaries stay trustworthy.** Reporter results are normalized into
+  immutable snapshots, so an incomplete refresh cannot replace the last known
+  complete status.
+* **Critical problems surface at the right moment.** A newly critical result
+  can interrupt the session; warnings, staleness, and recoveries stay quiet or
+  unobtrusive.
+* **Doctor can resume context safely.** A structured handoff preserves the
+  relevant issue and check identities, while stale or malformed context falls
+  back safely to general Doctor.
+* **Existing installations get it automatically.** The first refresh stays
+  quietly in a preparing state, with no new notification controls to configure.
+
+## [1.81.17] — 🧭 Historic checks now recognise what older releases actually shipped (2026-08-05)
+
+The final public Mac fleet stopped before testing one old semantic release because
+that release predates Dex's release catalogue. The adjacent immutable package
+completed both update hops, showing that the stop was in the fleet proof rather
+than the customer update path.
 
 **What this fixes for you:**
 
-* **One clear count everywhere.** “Ready to adopt” and “Already adopted” now
-  describe the same state in Doctor and the update preview.
-* **No adoption behavior changes.** This is a reporting fix only; the existing
-  safety checks, receipts, and holdbacks remain unchanged.
+* **Older semantic releases are judged by the files they actually shipped.** When
+  an exact historic release genuinely predates the catalogue, Dex can use its
+  verified updater files as evidence instead of requiring a file that never
+  existed.
+* **The newest public release joins the historic proof set.** Both v1.81.16
+  identities are tested through the exact immutable v1.81.16 first hop before
+  the distinct v1.81.17 follow-up.
+* **Missing or altered proof still stops safely.** An unreadable or malformed
+  catalogue, changed updater files, or a mismatched release identity is still
+  rejected before a journey starts.
+* **Historic support still has to be earned.** This release removes the narrow
+  proof-controller blocker, but Dex will claim support only after the freshly
+  generated public Mac fleet completes with zero failures.
+
+## [1.81.16] — 🧭 Historic updates now aim at the selected public foundation (2026-08-04)
+
+Dex's historic-update bridge previously used the original v1.81.0 foundation,
+even after newer releases had hardened the real two-hop journey. This follow-up
+closes the first hop to the exact public v1.81.15 release instead.
+
+**What this changes for you:**
+
+* **Old installations enter through the selected public foundation.** The bridge
+  verifies the exact annotated tag, commit, and tree before it can preview or
+  change anything.
+* **The second hop stays genuinely separate.** v1.81.16 is the distinct
+  follow-up release used to prove that v1.81.15 can deliver its successor.
+* **Fleet support is not assumed.** Dex will claim historic two-hop support only
+  after the freshly generated public Mac fleet completes with zero failures.
+
+## [1.81.15] — 🛡️ Temporary GitHub limits no longer stop a safe update (2026-08-04)
+
+During the formal historic Mac run, one healthy update reached its public
+foundation and then GitHub temporarily refused the second release proof. Dex
+stopped safely before previewing or writing anything, but the route had to be
+run again after the temporary limit cleared.
+
+**What this fixes for you:**
+
+* **One explicit GitHub rate-limit response gets one bounded retry.** Dex uses
+  only the time left inside the existing ten-second proof window; it does not
+  extend or loop the check.
+* **Every safety boundary stays closed.** Wrong release identities, invalid or
+  generic evidence, other HTTP failures, and a final download rejection still
+  stop immediately without previewing or changing your files.
+* **Fleet acceptance still requires the complete public run.** This release
+  hardens the exact transient seam that stopped the previous run, but Dex will
+  not claim historic two-hop support until a fresh retained 170-case Mac run
+  completes with zero failures.
+
+## [1.81.14] — (2026-08-04)
+
+## [1.81.13] — 🧷 v1.63 updates keep your saved profile intact (2026-08-03)
+
+The formal historic Mac fleet reached an exact v1.63 installation, then stopped
+because that release's built-in split helper rewrote its saved user profile while
+entering the protected update foundation. Dex's preservation guard caught the
+change and refused to continue, so no unsafe result was accepted.
+
+**What this fixes for you:**
+
+* **Exact affected v1.63 releases use the verified foundation migrator.** The
+  updater replaces only the known faulty helper for four immutable historic
+  release identities; unfamiliar or altered installations still stop safely.
+* **Your profile and other protected content remain byte-for-byte unchanged.** A
+  retained macOS canary proved the saved profile, notes, tasks, and custom skill
+  survive both update hops exactly.
+* **Fleet acceptance still requires the complete public run.** This release fixes
+  the v1.63 blocker, but Dex will not claim every historic release is upgradeable
+  until a fresh retained 170-case Mac run completes with zero failures.
+
+## [1.81.12] — (2026-08-03)
+
+## [1.81.11] — (2026-08-03)
+
+## [1.81.10] — 🛡️ Fleet proof no longer spends GitHub's shared API allowance (2026-08-03)
+
+The formal Mac fleet re-derived all 170 public starting cases, then GitHub refused
+the controller's unauthenticated release-metadata request because the shared public
+API allowance had been exhausted. The bridge and its checksum were already public
+and valid, but the gate correctly stopped before starting any journeys.
+
+**What this fixes for you:**
+
+* **Stable-release proof uses GitHub's public latest-release route.** The controller
+  requires one exact redirect to this version's canonical release page instead of
+  consuming the rate-limited metadata API.
+* **The updater assets remain independently verified.** Dex still downloads the
+  public bridge and checksum anonymously and requires their bytes to match the
+  submitted release artifacts exactly.
+* **Unexpected release routes still stop safely.** A missing redirect, extra hop,
+  different host, different version, query, fragment, or non-success response is
+  rejected before a historic installation starts.
+* **Fleet acceptance is still earned by journeys.** This release removes the
+  controller blocker; the freshly generated 170-case Mac run must still complete
+  before Dex claims historic two-hop acceptance.
+
+## [1.81.9] — 🧹 Oldest Dex installs clear one dormant search registration (2026-08-03)
+
+The formal Mac fleet began with v1.20.1 and reached the public foundation with
+personal files unchanged. Doctor then found that this oldest release still
+advertised the optional qmd search server even though qmd was not installed, so
+the updater correctly stopped before claiming a healthy result.
+
+**What this fixes for you:**
+
+* **The exact dormant qmd entry is removed during the protected bridge.** A proven
+  v1.20.1 install can replace that obsolete registration while adding Dex's current
+  lifecycle server, using the normal preview, approval, transaction, and receipt.
+* **Your other connections and settings stay untouched.** The compatibility route
+  removes only the exact legacy qmd shape; every unrelated MCP server and top-level
+  setting is preserved.
+* **The exception remains narrowly closed.** Dex requires the exact oldest-release
+  origin, the exact dormant registration, and an absent qmd executable. Any altered
+  or unfamiliar state still stops safely.
+* **Fleet acceptance is still earned by journeys.** This release repairs the first
+  formal failure; the freshly generated public 170-case run must restart and finish
+  before Dex claims universal historic support.
+
+## [1.81.8] — 🧭 Historic Mac installs enter a verified update route (2026-08-03)
+
+The historic updater sweep found real published Mac installs whose trustworthy
+release shapes predated today's metadata. Dex correctly stopped rather than
+guessing, but those known installs still needed an exact route into the protected
+two-step updater and a real Mac gate to prove it.
+
+**What this fixes for you:**
+
+* **Known historic releases are recognised by their exact identities.** Dex can
+  accept the verified v1.51, v1.61, v1.62, and archived v1.65 shapes used by the
+  release fleet, while unfamiliar or altered installs still stop safely.
+* **Each update hop is exercised on a real Mac.** The release gate runs the
+  foundation and follow-up updates, checks Doctor and smoke health, and confirms
+  protected personal-file hashes did not change.
+* **Fleet acceptance is counted from public history, never assumed.** The formal
+  controller freshly derives every immutable starting case, retains evidence,
+  and stops on failure. This release enables that public run; it does not claim
+  the full fleet has passed before those journeys complete.
+
+## [1.81.7] — 🛟 Stranded older installs can obtain the update bridge (2026-08-01)
+
+Jim's clean 1.79.0 package correctly detected the newest release, but its private
+Dex history contained only the installed version. The protected updater could
+verify new release bytes only after another component supplied them, while the
+one-time bridge existed solely inside the release it was meant to help install.
+
+**What this fixes for you:**
+
+* **The one-time bridge is now a real download.** Every release publishes the
+  reviewed compatibility bridge as its own versioned asset beside an exact
+  SHA-256 checksum, rather than hiding it inside the full Dex bundle.
+* **The rescue instructions are complete.** They name the immutable release
+  URLs, verify the downloaded bytes, and only then run the pinned bridge.
+* **Clean package installs are a required acceptance case.** A test controller
+  may no longer count a journey that silently lends the old install unreleased
+  updater code. Personal files remain outside the bridge's write boundary.
+
+## [1.81.6] — 🪜 Historic Mac upgrades recognise every known release shape (2026-07-31)
+
+The full historic sweep found eight exact older Mac release shapes where the
+updater stopped safely. This release teaches the bridge those verified layouts
+without turning unknown installations into guesses.
+
+**What this fixes for you:**
+
+* **The eight known historic layouts have a supported route forward.** Dex
+  recognises their exact release identities and can move them onto the protected
+  two-step update path.
+* **Unknown layouts still stop before personal files change.** Compatibility is
+  granted only to the old release shapes proven by the fleet evidence.
+* **The release safety gate keeps a recovery slot available.** It now blocks the
+  release history one step before an older updater would run out of room to
+  discover its bridge.
+* **Fleet acceptance remains evidence-led.** The published journeys must still
+  pass before Dex claims these repairs are live for every historic starting point.
 
 ## [1.81.5] — 🧾 Historic installs receive matching migration metadata (2026-07-31)
 

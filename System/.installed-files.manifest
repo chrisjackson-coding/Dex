@@ -598,6 +598,7 @@
 .github/dependabot.yml
 .github/pull_request_template.md
 .github/workflows/ci.yml
+.github/workflows/historic-fleet-darwin.yml
 .github/workflows/nightly-quality.yml
 .github/workflows/release.yml
 .gitignore
@@ -751,6 +752,11 @@ core/entity_engine/relationships.py
 core/entity_engine/temperature.py
 core/entity_engine/write.py
 core/entity_maintenance.py
+core/health/__init__.py
+core/health/doctor_ref.py
+core/health/doctor_reporter.py
+core/health/reporter.py
+core/health/snapshot.py
 core/integrations/BUILD_TRACKER.md
 core/integrations/__init__.py
 core/integrations/connection-manager/README.md
@@ -1039,10 +1045,16 @@ core/tests/test_fuzz_properties.py
 core/tests/test_golden_journeys.py
 core/tests/test_granola_configuration_truth.py
 core/tests/test_granola_server.py
+core/tests/test_health_compatibility.py
+core/tests/test_health_doctor_ref.py
 core/tests/test_health_page_scripts.py
+core/tests/test_health_reporter.py
+core/tests/test_health_session_surface.py
+core/tests/test_health_snapshot.py
 core/tests/test_health_telemetry.py
 core/tests/test_health_telemetry_consent_ux.py
 core/tests/test_health_telemetry_privacy.py
+core/tests/test_historic_fleet_darwin_workflow.py
 core/tests/test_history_hygiene.py
 core/tests/test_initiative_kickoff_skill.py
 core/tests/test_install_adoption_python.py
@@ -1087,6 +1099,7 @@ core/tests/test_release_channel.py
 core/tests/test_release_fleet.py
 core/tests/test_release_fleet_acceptance.py
 core/tests/test_release_fleet_executor.py
+core/tests/test_release_fleet_failure_diagnostics.py
 core/tests/test_release_tag_uniqueness.py
 core/tests/test_review_retirement.py
 core/tests/test_ritual_intelligence_entrypoints.py
@@ -1112,6 +1125,7 @@ core/tests/test_transcript_ingest.py
 core/tests/test_transcript_reconcile.py
 core/tests/test_trust_wizards.py
 core/tests/test_trusted_mcp_safety.py
+core/tests/test_update_bridge_historic_compatibility.py
 core/tests/test_update_checker.py
 core/tests/test_update_checker_real_installs.py
 core/tests/test_update_journey_protocol.py
@@ -1143,6 +1157,7 @@ core/utils/dex_logger.py
 core/utils/doctor.py
 core/utils/entity_pages.py
 core/utils/feature_status.py
+core/utils/health_session.py
 core/utils/health_telemetry.py
 core/utils/history_hygiene.py
 core/utils/integration_credentials.py
@@ -1290,6 +1305,7 @@ scripts/release_fleet_acceptance.py
 scripts/release_fleet_executor.py
 scripts/render-health-page.py
 scripts/resolve-distignore-files.sh
+scripts/run-historic-fleet-darwin.sh
 scripts/security-allowlist.txt
 scripts/security-gate.sh
 scripts/security-scan.py

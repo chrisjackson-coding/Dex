@@ -1131,6 +1131,24 @@ def collect(
     return report
 
 
+def collect_reporter(
+    *,
+    refresh_id: str,
+    heal: bool = False,
+    context: DoctorContext | None = None,
+):
+    """Collect the complete Doctor registry through the proactive reporter contract.
+
+    This is an adapter, not a second collector.  The existing Doctor report is
+    still written and remains the authority for detailed evidence and repairs;
+    the returned envelope contains only normalized factual check results.
+    """
+    from core.health.doctor_reporter import from_doctor_report
+
+    report = collect(deep=True, heal=heal, context=context)
+    return from_doctor_report(report, refresh_id=refresh_id)
+
+
 @contextmanager
 def _vault_environment(context: DoctorContext) -> Iterator[None]:
     previous = {name: os.environ.get(name) for name in ("VAULT_PATH", "VAULT_ROOT")}
@@ -3657,19 +3675,23 @@ def _worktree_blob_ids(
 ) -> dict[str, str]:
     if not relatives:
         return {}
-    hashed = _git_result(
-        context,
-        "hash-object",
-        "--no-filters",
-        "--stdin-paths",
-        input_text="".join(f"{relative}\n" for relative in relatives),
-    )
-    if hashed.returncode != 0:
-        return {}
-    object_ids = hashed.stdout.splitlines()
-    if len(object_ids) != len(relatives):
-        return {}
-    return dict(zip(relatives, object_ids, strict=True))
+    worktree_ids: dict[str, str] = {}
+    for offset in range(0, len(relatives), 128):
+        batch = relatives[offset : offset + 128]
+        hashed = _git_result(
+            context,
+            "hash-object",
+            "--no-filters",
+            "--stdin-paths",
+            input_text="".join(f"{relative}\n" for relative in batch),
+        )
+        if hashed.returncode != 0:
+            return {}
+        object_ids = hashed.stdout.splitlines()
+        if len(object_ids) != len(batch):
+            return {}
+        worktree_ids.update(zip(batch, object_ids, strict=True))
+    return worktree_ids
 
 
 def _symlink_matches_release_blob(path: Path, object_id: str) -> bool:

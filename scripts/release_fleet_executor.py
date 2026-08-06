@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import ModuleType
 from typing import Callable, Mapping, Protocol, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,10 @@ _RELEASE_TAG = re.compile(
     r"^dist/release/v(?P<version>(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-(?P<short>[0-9a-f]{7,40})$"
 )
+_ARCHIVE_RELEASE_TAG = re.compile(
+    r"^dist/archive/v(?P<version>(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-(?P<short>[0-9a-f]{7})$"
+)
 _LEGACY_RELEASE_TAG = re.compile(
     r"^v(?P<version>(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))$"
@@ -49,10 +54,43 @@ _DECLARED_LIFECYCLE_OPERATIONS = frozenset(
         "execute_approved_delivered_release",
     }
 )
+_SAFE_DELIVERY_FAILURE_REASONS = frozenset(
+    {
+        "cancelled",
+        "channel-invalid",
+        "encoding-invalid",
+        "evidence-invalid",
+        "identity-malformed",
+        "io-error",
+        "network-unavailable",
+        "query-setup-invalid",
+        "state-write-failed",
+        "subprocess-failed",
+        "tag-object-mismatch",
+        "tag-object-moved",
+    }
+)
+_MAX_FAILURE_DIAGNOSTIC_ELAPSED_MS = 900_000
 
 
 class ExecutorError(RuntimeError):
     """The released journey executor could not prove a safe completed run."""
+
+
+class PublicRouteDriftError(ExecutorError):
+    """The public latest route differs from the session's pinned follow-up."""
+
+    def __init__(
+        self,
+        expected_release: Mapping[str, str],
+        delivered_release: Mapping[str, str],
+    ) -> None:
+        self.expected_release = dict(expected_release)
+        self.delivered_release = dict(delivered_release)
+        super().__init__(
+            "public release route drifted from pinned "
+            f"{self.expected_release['tag']} to {self.delivered_release['tag']}"
+        )
 
 
 class ExecutorRun:
@@ -141,6 +179,51 @@ def _validate_foundation_cache(
             raise ExecutorError(
                 "foundation cache does not match the pinned official release"
             )
+    return resolved
+
+
+def _validate_follow_up_cache(
+    cache: Path,
+    release: Mapping[str, object],
+) -> Path:
+    """Prove a closed private cache contains the requested canary identity."""
+
+    identity = _strict_identity(release, "follow-up")
+    if cache.is_symlink() or not cache.is_dir():
+        raise ExecutorError("follow-up cache must be a private bare repository")
+    status = cache.stat()
+    if status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) != 0o700:
+        raise ExecutorError("follow-up cache must be controller-owned with mode 0700")
+    resolved = cache.resolve(strict=True)
+    if _cached_git(resolved, "rev-parse", "--is-bare-repository") != "true":
+        raise ExecutorError("follow-up cache must be a private bare repository")
+    alternates = resolved / "objects" / "info" / "alternates"
+    if alternates.is_symlink() or alternates.exists():
+        raise ExecutorError("follow-up cache must not use alternate object stores")
+    expected = {
+        f"refs/tags/{identity['tag']}": identity["tag_object"],
+        f"{identity['tag']}^{{commit}}": identity["commit"],
+        f"{identity['tag']}^{{tree}}": identity["tree"],
+        "refs/heads/release^{commit}": identity["commit"],
+    }
+    for revision, expected_object in expected.items():
+        try:
+            actual = _cached_git(resolved, "rev-parse", "--verify", revision)
+        except ExecutorError as error:
+            raise ExecutorError(
+                "follow-up cache does not match the requested canary release"
+            ) from error
+        if actual != expected_object:
+            raise ExecutorError(
+                "follow-up cache does not match the requested canary release"
+            )
+    refs = set(
+        _cached_git(resolved, "for-each-ref", "--format=%(refname)").splitlines()
+    )
+    if refs != {f"refs/tags/{identity['tag']}", "refs/heads/release"}:
+        raise ExecutorError(
+            "follow-up cache contains refs outside the requested canary release"
+        )
     return resolved
 
 
@@ -258,7 +341,15 @@ class JourneyRuntime(Protocol):
 class _ProductionRuntime:
     """Closed parent adapter over a fixture-venv lifecycle runtime."""
 
-    def __init__(self, *, foundation_cache: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        bridge_asset: Path,
+        bridge_sha256: str,
+        foundation_cache: Path | None = None,
+        follow_up_cache: Path | None = None,
+        follow_up_release: Mapping[str, object] | None = None,
+    ) -> None:
         self._runtime_home = tempfile.TemporaryDirectory(
             prefix="dex-release-journey-runtime-"
         )
@@ -274,6 +365,22 @@ class _ProductionRuntime:
             if foundation_cache is not None
             else None
         )
+        if (follow_up_cache is None) != (follow_up_release is None):
+            raise ExecutorError(
+                "follow-up cache and release identity must be supplied together"
+            )
+        self._follow_up_release = (
+            _strict_identity(follow_up_release, "follow-up")
+            if follow_up_release is not None
+            else None
+        )
+        self._follow_up_cache = (
+            _validate_follow_up_cache(follow_up_cache, self._follow_up_release)
+            if follow_up_cache is not None and self._follow_up_release is not None
+            else None
+        )
+        self._bridge_asset = bridge_asset.resolve(strict=True)
+        self._bridge_sha256 = bridge_sha256
 
     def _link_optional_qmd(self) -> None:
         """Expose only a real controller QMD binary to installed health checks.
@@ -403,10 +510,28 @@ class _ProductionRuntime:
             "_runtime-server",
             "--vault",
             str(root),
+            "--bridge-asset",
+            str(self._bridge_asset),
+            "--bridge-sha256",
+            self._bridge_sha256,
         ]
         if self._foundation_cache is not None:
             command.extend(
                 ["--foundation-cache", str(self._foundation_cache)]
+            )
+        if self._follow_up_cache is not None:
+            assert self._follow_up_release is not None
+            command.extend(
+                [
+                    "--follow-up-cache",
+                    str(self._follow_up_cache),
+                    "--follow-up-release",
+                    json.dumps(
+                        self._follow_up_release,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                ]
             )
         process = subprocess.Popen(
             command,
@@ -508,6 +633,29 @@ class _ProductionRuntime:
             )
         return response
 
+    @staticmethod
+    def _test_delivery_call(
+        service: object,
+        vault: Path,
+        follow_up_cache: Path,
+    ) -> Mapping[str, object]:
+        function = getattr(service, "deliver_latest_release", None)
+        if not callable(function):
+            raise ExecutorError(
+                "released foundation lifecycle service lacks deliver_latest_release"
+            )
+        response = function(
+            vault,
+            remote_url=str(follow_up_cache),
+            allow_test_transport=True,
+        )
+        if not isinstance(response, Mapping):
+            raise ExecutorError(
+                "released foundation lifecycle operation deliver_latest_release "
+                "returned malformed evidence"
+            )
+        return response
+
     def bridge_to_foundation(
         self,
         vault: Path,
@@ -556,6 +704,10 @@ class _ProductionRuntime:
         vault: Path,
         module: str,
         *arguments: str,
+        timeout_seconds: int = 600,
+        timeout_attempts: int = 1,
+        attempt_number: int = 1,
+        retain_attempt_count: bool = False,
     ) -> Mapping[str, object]:
         root = dex_update_bridge._validate_vault(vault)
         interpreter = dex_update_bridge._installed_python(root)
@@ -572,13 +724,23 @@ class _ProductionRuntime:
             start_new_session=True,
         )
         try:
-            stdout, stderr = process.communicate(timeout=600)
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as error:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             process.communicate()
+            if timeout_attempts > 1:
+                return self._installed_json(
+                    vault,
+                    module,
+                    *arguments,
+                    timeout_seconds=timeout_seconds,
+                    timeout_attempts=timeout_attempts - 1,
+                    attempt_number=attempt_number + 1,
+                    retain_attempt_count=retain_attempt_count,
+                )
             raise ExecutorError(f"installed {module} timed out") from error
         if len(stdout) > 16 * 1024 * 1024 or len(stderr) > 1024 * 1024:
             raise ExecutorError(f"installed {module} output exceeded its bound")
@@ -591,10 +753,25 @@ class _ProductionRuntime:
             raise ExecutorError(f"installed {module} returned malformed JSON") from error
         if not isinstance(report, Mapping):
             raise ExecutorError(f"installed {module} returned malformed JSON")
+        if retain_attempt_count:
+            if "journey_transport" in report:
+                raise ExecutorError(
+                    f"installed {module} returned reserved journey transport evidence"
+                )
+            return {
+                **report,
+                "journey_transport": {"attempt_count": attempt_number},
+            }
         return report
 
     def doctor(self, vault: Path) -> Mapping[str, object]:
-        return self._installed_json(vault, "core.utils.doctor")
+        return self._installed_json(
+            vault,
+            "core.utils.doctor",
+            timeout_seconds=60,
+            timeout_attempts=2,
+            retain_attempt_count=True,
+        )
 
     def deliver_latest_release(self, vault: Path) -> Mapping[str, object]:
         return self._server_call(vault, "deliver_latest_release")
@@ -658,12 +835,47 @@ def _runtime_server_answer(prompt: str) -> str:
     return response["answer"]
 
 
+def _load_released_bridge(bridge_asset: Path, bridge_sha256: str):
+    """Load only the standalone bridge bytes already bound to the release."""
+
+    if bridge_asset.is_symlink() or not bridge_asset.is_file():
+        raise ExecutorError("standalone released bridge asset is missing or unsafe")
+    bridge_bytes = bridge_asset.read_bytes()
+    if hashlib.sha256(bridge_bytes).hexdigest() != bridge_sha256:
+        raise ExecutorError("standalone released bridge asset changed before execution")
+    module_name = "dex_released_update_bridge"
+    released_bridge = ModuleType(module_name)
+    released_bridge.__file__ = str(bridge_asset)
+    released_bridge.__package__ = ""
+    sys.modules[module_name] = released_bridge
+    code = compile(bridge_bytes, str(bridge_asset), "exec", dont_inherit=True)
+    exec(code, released_bridge.__dict__)
+    return released_bridge
+
+
 def _runtime_server(
     vault: Path,
     *,
+    bridge_asset: Path,
+    bridge_sha256: str,
     foundation_cache: Path | None = None,
+    follow_up_cache: Path | None = None,
+    follow_up_release: Mapping[str, object] | None = None,
 ) -> int:
     """Serve the fixed lifecycle vocabulary from the fixture virtualenv."""
+
+    global dex_update_bridge
+    dex_update_bridge = _load_released_bridge(bridge_asset, bridge_sha256)
+
+    if (follow_up_cache is None) != (follow_up_release is None):
+        raise ExecutorError(
+            "follow-up cache and release identity must be supplied together"
+        )
+    verified_follow_up_cache = (
+        _validate_follow_up_cache(follow_up_cache, follow_up_release)
+        if follow_up_cache is not None and follow_up_release is not None
+        else None
+    )
 
     root = dex_update_bridge._validate_vault(vault)
     temporary: tempfile.TemporaryDirectory[str] | None = None
@@ -722,11 +934,18 @@ def _runtime_server(
                 elif operation == "deliver_latest_release" and set(request) == {
                     "operation"
                 }:
-                    result = _ProductionRuntime._service_call(
-                        service,
-                        operation,
-                        root,
-                    )
+                    if verified_follow_up_cache is None:
+                        result = _ProductionRuntime._service_call(
+                            service,
+                            operation,
+                            root,
+                        )
+                    else:
+                        result = _ProductionRuntime._test_delivery_call(
+                            service,
+                            root,
+                            verified_follow_up_cache,
+                        )
                 elif operation == "build_and_preview_delivered_release":
                     payload = request.get("payload")
                     if (
@@ -776,6 +995,7 @@ def _strict_identity(
     value: Mapping[str, object],
     context: str,
     *,
+    allow_archive: bool = False,
     allow_legacy: bool = False,
 ) -> dict[str, str]:
     if set(value) != _IDENTITY_FIELDS or not all(
@@ -784,12 +1004,16 @@ def _strict_identity(
         raise ExecutorError(f"{context} release identity is malformed")
     identity = {field: str(value[field]) for field in _IDENTITY_FIELDS}
     tag_match = _RELEASE_TAG.fullmatch(identity["tag"])
+    archive_match = (
+        _ARCHIVE_RELEASE_TAG.fullmatch(identity["tag"]) if allow_archive else None
+    )
     legacy_match = (
         _LEGACY_RELEASE_TAG.fullmatch(identity["tag"]) if allow_legacy else None
     )
+    immutable_match = tag_match if tag_match is not None else archive_match
     version = (
-        tag_match.group("version")
-        if tag_match is not None
+        immutable_match.group("version")
+        if immutable_match is not None
         else legacy_match.group("version") if legacy_match is not None else None
     )
     if (
@@ -797,13 +1021,39 @@ def _strict_identity(
         or version is None
         or version != identity["version"]
         or (
-            tag_match is not None
-            and not identity["commit"].startswith(tag_match.group("short"))
+            immutable_match is not None
+            and not identity["commit"].startswith(immutable_match.group("short"))
         )
         or identity["channel"] != "stable"
     ):
         raise ExecutorError(f"{context} release identity is malformed")
     return identity
+
+
+def _closed_delivered_release(
+    delivery: Mapping[str, object],
+) -> dict[str, str] | None:
+    """Return only a complete public release identity safe for diagnostics."""
+
+    release = delivery.get("release")
+    if delivery.get("status") != "delivered" or not isinstance(release, Mapping):
+        return None
+    try:
+        return _strict_identity(release, "delivered")
+    except ExecutorError:
+        return None
+
+
+def _public_route_drift_identity(
+    delivery: Mapping[str, object],
+    follow_up: Mapping[str, str],
+) -> dict[str, str] | None:
+    """Return the validated delivered identity only when the public route drifted."""
+
+    delivered_release = _closed_delivered_release(delivery)
+    if delivered_release is None or delivered_release == dict(follow_up):
+        return None
+    return delivered_release
 
 
 def _git_show(repo_root: Path, commit: str, relative: str) -> bytes:
@@ -839,6 +1089,7 @@ def _verify_released_executor(
     source_commit: str,
     protocol: UpdateJourneyProtocol,
     foundation: Mapping[str, str],
+    bridge_asset: Path,
 ) -> dict[str, object]:
     if _HEX_40.fullmatch(source_commit) is None:
         raise ExecutorError("released executor source commit is malformed")
@@ -854,7 +1105,7 @@ def _verify_released_executor(
         (
             "foundation bridge",
             protocol.bridge.artifact,
-            Path(dex_update_bridge.__file__).resolve(),
+            bridge_asset,
         ),
     )
     evidence: dict[str, object] = {"source_commit": source_commit}
@@ -923,6 +1174,228 @@ def _doctor_healthy(report: Mapping[str, object]) -> bool:
             for check in checks
         )
     )
+
+
+_FAILURE_DIAGNOSTIC_FILES = frozenset(
+    {
+        "foundation-doctor-failure.diagnostic.json",
+        "follow-up-delivery-failure.diagnostic.json",
+        "follow-up-doctor-failure.diagnostic.json",
+    }
+)
+_FAILURE_DIAGNOSTIC_MAX_FILE_BYTES = 1024 * 1024
+_DOCTOR_DIAGNOSTIC_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+_DOCTOR_DIAGNOSTIC_VERDICTS = frozenset({"OK", "OFF", "BROKEN", "UNKNOWN"})
+
+
+def _safe_file_metadata(vault: Path, relative: str) -> dict[str, object]:
+    """Return non-content metadata for one fixed Dex-owned runtime file."""
+
+    candidate = vault / relative
+    try:
+        status = candidate.lstat()
+    except FileNotFoundError:
+        return {"state": "missing"}
+    if stat.S_ISLNK(status.st_mode):
+        return {"state": "symlink"}
+    if not stat.S_ISREG(status.st_mode):
+        return {"state": "not-regular"}
+    if status.st_size > _FAILURE_DIAGNOSTIC_MAX_FILE_BYTES:
+        return {"state": "too-large", "byte_size": status.st_size}
+    try:
+        descriptor = os.open(
+            candidate,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except FileNotFoundError:
+        return {"state": "missing"}
+    except OSError:
+        # Do not include operating-system errors: they can embed user paths.
+        return {"state": "unreadable"}
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            return {"state": "not-regular"}
+        if (opened.st_dev, opened.st_ino) != (status.st_dev, status.st_ino):
+            return {"state": "changed"}
+        if opened.st_size > _FAILURE_DIAGNOSTIC_MAX_FILE_BYTES:
+            return {"state": "too-large", "byte_size": opened.st_size}
+        digest = hashlib.sha256()
+        byte_size = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, _FAILURE_DIAGNOSTIC_MAX_FILE_BYTES + 1 - byte_size))
+            if not chunk:
+                break
+            byte_size += len(chunk)
+            if byte_size > _FAILURE_DIAGNOSTIC_MAX_FILE_BYTES:
+                return {"state": "too-large", "byte_size": byte_size}
+            digest.update(chunk)
+        return {
+            "state": "regular",
+            "byte_size": byte_size,
+            "sha256": digest.hexdigest(),
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _sanitized_doctor_report(report: Mapping[str, object]) -> dict[str, object]:
+    """Keep Doctor verdicts while deliberately excluding free-form details."""
+
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        return {"checks_state": "malformed"}
+    sanitized: list[dict[str, str]] = []
+    for check in checks[:200]:
+        if not isinstance(check, Mapping):
+            sanitized.append({"id": "<malformed>", "verdict": "<malformed>"})
+            continue
+        identifier = check.get("id")
+        verdict = check.get("verdict")
+        sanitized.append(
+            {
+                "id": (
+                    identifier
+                    if isinstance(identifier, str)
+                    and _DOCTOR_DIAGNOSTIC_ID.fullmatch(identifier)
+                    else "<redacted>"
+                ),
+                "verdict": (
+                    verdict
+                    if isinstance(verdict, str) and verdict in _DOCTOR_DIAGNOSTIC_VERDICTS
+                    else "<redacted>"
+                ),
+            }
+        )
+    return {
+        "checks": sanitized,
+        "check_count": len(checks),
+        "details": "redacted",
+    }
+
+
+def _write_failure_diagnostic(
+    evidence_root: Path,
+    name: str,
+    value: Mapping[str, object],
+) -> Path:
+    """Atomically retain one private, non-acceptance failure diagnostic.
+
+    The success evidence bundle deliberately remains all-or-nothing.  These
+    diagnostics are a separate, local-only seam for a failed journey and are
+    neither indexed nor referenced by a journey result or evidence manifest.
+    """
+
+    if name not in _FAILURE_DIAGNOSTIC_FILES:
+        raise ExecutorError("failure diagnostic name is not declared")
+    try:
+        root_status = evidence_root.lstat()
+    except FileNotFoundError as error:
+        raise ExecutorError("failure diagnostic root is missing") from error
+    if not stat.S_ISDIR(root_status.st_mode) or stat.S_ISLNK(root_status.st_mode):
+        raise ExecutorError("failure diagnostic root is unsafe")
+    if stat.S_IMODE(root_status.st_mode) != 0o700:
+        raise ExecutorError("failure diagnostic root must have mode 0700")
+
+    destination = evidence_root / name
+    if destination.parent != evidence_root:
+        raise ExecutorError("failure diagnostic path is unsafe")
+    content = (
+        json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)
+        + "\n"
+    ).encode("utf-8")
+    temporary = evidence_root / f".{name}.{os.getpid()}.{time.time_ns()}.tmp"
+    created = False
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        created = True
+        try:
+            view = memoryview(content)
+            while view:
+                view = view[os.write(descriptor, view) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        # link(2) is atomic and fails rather than replacing a pre-existing path.
+        os.link(temporary, destination, follow_symlinks=False)
+        directory = os.open(evidence_root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError as error:
+        raise ExecutorError("failure diagnostic could not be retained safely") from error
+    finally:
+        if created:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    return destination
+
+
+def _failure_runtime_metadata(vault: Path) -> dict[str, dict[str, object]]:
+    """Digest only fixed Dex-owned files; never serialize their contents."""
+
+    return {
+        relative: _safe_file_metadata(vault, relative)
+        for relative in (
+            "System/.release-catalog.json",
+            "System/.installed-files.manifest",
+        )
+    }
+
+
+def _failure_diagnostic(
+    *,
+    phase: str,
+    vault: Path,
+    foundation: Mapping[str, str],
+    follow_up: Mapping[str, str],
+    doctor: Mapping[str, object] | None = None,
+    delivery: Mapping[str, object] | None = None,
+    delivery_elapsed_ms: int | None = None,
+) -> dict[str, object]:
+    document: dict[str, object] = {
+        "acceptance": False,
+        "kind": "local-failure-diagnostic",
+        "phase": phase,
+        "schema_version": 1,
+        "expected_foundation": dict(foundation),
+        "expected_follow_up": dict(follow_up),
+        "runtime_metadata": _failure_runtime_metadata(vault),
+    }
+    if doctor is not None:
+        document["doctor"] = _sanitized_doctor_report(doctor)
+    if delivery is not None:
+        evidence = delivery.get("evidence")
+        reason = evidence.get("reason") if isinstance(evidence, Mapping) else None
+        route_drift_release = _public_route_drift_identity(delivery, follow_up)
+        if route_drift_release is not None:
+            failure_reason = "public-route-drift"
+        elif isinstance(reason, str) and reason in _SAFE_DELIVERY_FAILURE_REASONS:
+            failure_reason = reason
+        else:
+            failure_reason = "unclassified"
+        delivery_diagnostic: dict[str, object] = {
+            "status": (
+                "delivered" if delivery.get("status") == "delivered" else "not-delivered"
+            ),
+            "release_matches_expected": delivery.get("release") == dict(follow_up),
+            "failure_reason": failure_reason,
+            "elapsed_ms": min(
+                max(delivery_elapsed_ms or 0, 0),
+                _MAX_FAILURE_DIAGNOSTIC_ELAPSED_MS,
+            ),
+        }
+        if route_drift_release is not None:
+            delivery_diagnostic["delivered_release"] = route_drift_release
+        document["delivery"] = delivery_diagnostic
+    return document
 
 
 def _smoke_healthy(report: Mapping[str, object]) -> bool:
@@ -1033,15 +1506,24 @@ def _execute_journey_with_runtime(
     foundation_surface: Mapping[str, object],
     user_owned_paths: Sequence[str],
     platform: str,
+    bridge_asset_evidence: Mapping[str, str],
+    bridge_asset_path: Path,
+    initial_install_evidence: Mapping[str, object],
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
     _runtime: JourneyRuntime,
+    _case_started: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Execute and own one closed two-hop journey in the current process."""
 
     if platform not in protocol.platforms:
         raise ExecutorError(f"journey platform is not declared by the protocol: {platform}")
-    start = _strict_identity(starting_release, "starting", allow_legacy=True)
+    start = _strict_identity(
+        starting_release,
+        "starting",
+        allow_archive=True,
+        allow_legacy=True,
+    )
     foundation = _strict_identity(foundation_release, "foundation")
     follow_up = _strict_identity(follow_up_release, "follow-up")
     if foundation == follow_up:
@@ -1051,7 +1533,41 @@ def _execute_journey_with_runtime(
         source_commit,
         protocol,
         foundation,
+        bridge_asset_path,
     )
+    expected_asset_name = f"dex-update-bridge-v{follow_up['version']}.py"
+    expected_bridge_evidence = {
+        "name": expected_asset_name,
+        "sha256": protocol.bridge.artifact.sha256,
+        "checksum_name": f"{expected_asset_name}.sha256",
+        "checksum_sha256": bridge_asset_evidence.get("checksum_sha256", ""),
+        "source": "released-standalone-asset",
+    }
+    if (
+        dict(bridge_asset_evidence) != expected_bridge_evidence
+        or re.fullmatch(r"[0-9a-f]{64}", expected_bridge_evidence["checksum_sha256"])
+        is None
+    ):
+        raise ExecutorError("standalone released bridge evidence is invalid")
+    topology = initial_install_evidence.get("topology")
+    brain_refs = initial_install_evidence.get("brain_refs")
+    if (
+        topology not in {"legacy-monolithic", "brain-vault-split"}
+        or not isinstance(brain_refs, list)
+        or any(not isinstance(ref, str) for ref in brain_refs)
+        or (topology == "legacy-monolithic" and brain_refs)
+        or (
+            topology == "brain-vault-split"
+            and (
+                "refs/dex/installed" not in brain_refs
+                or any(
+                    ref not in {"refs/dex/installed", "refs/heads/release"}
+                    for ref in brain_refs
+                )
+            )
+        )
+    ):
+        raise ExecutorError("initial clean package ref evidence is invalid")
     if evidence_root.exists():
         raise ExecutorError("journey evidence directory must be empty")
     evidence_root.mkdir(parents=True, mode=0o700)
@@ -1061,6 +1577,8 @@ def _execute_journey_with_runtime(
         raise ExecutorError("historic update surface is not bound to the starting release")
     if foundation_surface.get("release") != foundation:
         raise ExecutorError("foundation update surface is not bound to the foundation release")
+    if _case_started is not None:
+        _case_started()
 
     bridge_approvals: list[dict[str, str]] = []
 
@@ -1096,16 +1614,56 @@ def _execute_journey_with_runtime(
         raise ExecutorError("user-owned content changed during foundation delivery")
     foundation_doctor = dict(_runtime.doctor(vault))
     if not _doctor_healthy(foundation_doctor):
+        _write_failure_diagnostic(
+            evidence_root,
+            "foundation-doctor-failure.diagnostic.json",
+            _failure_diagnostic(
+                phase="foundation-doctor",
+                vault=vault,
+                foundation=foundation,
+                follow_up=follow_up,
+                doctor=foundation_doctor,
+            ),
+        )
         raise ExecutorError("foundation Doctor is unhealthy or incomplete")
     after_foundation = _hash_user_owned(vault, user_owned_paths)
     if after_foundation != before:
         raise ExecutorError("user-owned content changed during foundation health proof")
 
+    delivery_started = time.monotonic_ns()
     delivered = dict(_runtime.deliver_latest_release(vault))
+    delivery_elapsed_ms = (time.monotonic_ns() - delivery_started) // 1_000_000
+    delivered_release = _public_route_drift_identity(delivered, follow_up)
+    if delivered_release is not None:
+        _write_failure_diagnostic(
+            evidence_root,
+            "follow-up-delivery-failure.diagnostic.json",
+            _failure_diagnostic(
+                phase="follow-up-delivery",
+                vault=vault,
+                foundation=foundation,
+                follow_up=follow_up,
+                delivery=delivered,
+                delivery_elapsed_ms=delivery_elapsed_ms,
+            ),
+        )
+        raise PublicRouteDriftError(follow_up, delivered_release)
     if (
         delivered.get("status") != "delivered"
         or delivered.get("release") != follow_up
     ):
+        _write_failure_diagnostic(
+            evidence_root,
+            "follow-up-delivery-failure.diagnostic.json",
+            _failure_diagnostic(
+                phase="follow-up-delivery",
+                vault=vault,
+                foundation=foundation,
+                follow_up=follow_up,
+                delivery=delivered,
+                delivery_elapsed_ms=delivery_elapsed_ms,
+            ),
+        )
         raise ExecutorError("lifecycle delivery did not prove the requested follow-up release")
     preview_response = dict(
         _runtime.build_and_preview_delivered_release(vault, follow_up)
@@ -1142,6 +1700,17 @@ def _execute_journey_with_runtime(
         raise ExecutorError("user-owned content changed during follow-up delivery")
     follow_doctor = dict(_runtime.doctor(vault))
     if not _doctor_healthy(follow_doctor):
+        _write_failure_diagnostic(
+            evidence_root,
+            "follow-up-doctor-failure.diagnostic.json",
+            _failure_diagnostic(
+                phase="follow-up-doctor",
+                vault=vault,
+                foundation=foundation,
+                follow_up=follow_up,
+                doctor=follow_doctor,
+            ),
+        )
         raise ExecutorError("follow-up Doctor is unhealthy or incomplete")
     smoke_report = dict(_runtime.smoke(vault))
     if not _smoke_healthy(smoke_report):
@@ -1191,11 +1760,13 @@ def _execute_journey_with_runtime(
             "command": [protocol.executor.source_path, "classify-historic-route"],
             "release": start,
             "machine_executable": historic_surface.get("machine_executable"),
+            "initial_install": dict(initial_install_evidence),
         },
         {
             "id": "bridge-foundation",
             "command": [protocol.executor.source_path, protocol.bridge.adapter],
             "release": foundation,
+            "bridge_asset": dict(bridge_asset_evidence),
             "approval_count": len(bridge_approvals),
             "approvals": bridge_approvals,
         },
@@ -1307,6 +1878,24 @@ def _executor_boundary():
         )
     }
 
+    def production_authority_intact(
+        runtime: object,
+        *,
+        production_owned: bool,
+        follow_up_cache: Path | None,
+    ) -> bool:
+        """Keep acceptance authority on the canonical public transport only."""
+
+        return (
+            production_owned
+            and follow_up_cache is None
+            and type(runtime) is production_runtime_type
+            and all(
+                getattr(production_runtime_type, name) is function
+                for name, function in production_methods.items()
+            )
+        )
+
     def execute_journey(
         *,
         repo_root: Path,
@@ -1321,14 +1910,28 @@ def _executor_boundary():
         foundation_surface: Mapping[str, object],
         user_owned_paths: Sequence[str],
         platform: str,
+        bridge_asset_evidence: Mapping[str, str],
+        bridge_asset_path: Path,
+        initial_install_evidence: Mapping[str, object],
+        follow_up_cache: Path | None = None,
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
         _runtime: JourneyRuntime | None = None,
+        _case_started: Callable[[], None] | None = None,
     ) -> ExecutorRun:
         """Execute one released journey and retain production authority here."""
 
         production_owned = _runtime is None
-        runtime = production_runtime_type() if production_owned else _runtime
+        runtime = (
+            production_runtime_type(
+                bridge_asset=bridge_asset_path,
+                bridge_sha256=protocol.bridge.artifact.sha256,
+                follow_up_cache=follow_up_cache,
+                follow_up_release=follow_up_release if follow_up_cache is not None else None,
+            )
+            if production_owned
+            else _runtime
+        )
         assert runtime is not None
         try:
             case = execute_with_runtime(
@@ -1344,9 +1947,13 @@ def _executor_boundary():
                 foundation_surface=foundation_surface,
                 user_owned_paths=user_owned_paths,
                 platform=platform,
+                bridge_asset_evidence=bridge_asset_evidence,
+                bridge_asset_path=bridge_asset_path,
+                initial_install_evidence=initial_install_evidence,
                 input_fn=input_fn,
                 output_fn=output_fn,
                 _runtime=runtime,
+                _case_started=_case_started,
             )
         finally:
             if production_owned:
@@ -1358,13 +1965,10 @@ def _executor_boundary():
         ).encode("utf-8")
         run = object.__new__(ExecutorRun)
         object.__setattr__(run, "_case_json", case_json)
-        production_intact = (
-            production_owned
-            and type(runtime) is production_runtime_type
-            and all(
-                getattr(production_runtime_type, name) is function
-                for name, function in production_methods.items()
-            )
+        production_intact = production_authority_intact(
+            runtime,
+            production_owned=production_owned,
+            follow_up_cache=follow_up_cache,
         )
         seal = (
             (authority, hashlib.sha256(case_json).digest())
@@ -1399,6 +2003,7 @@ __all__ = [
     "EXECUTOR_INTERFACE_VERSION",
     "ExecutorError",
     "ExecutorRun",
+    "PublicRouteDriftError",
     "JourneyRuntime",
     "execute_journey",
     "is_authoritative_executor_run",
@@ -1407,22 +2012,60 @@ __all__ = [
 
 if __name__ == "__main__":
     valid = (
-        len(sys.argv) == 4
+        len(sys.argv) >= 8
+        and len(sys.argv) % 2 == 0
         and sys.argv[1:3] == ["_runtime-server", "--vault"]
-    ) or (
-        len(sys.argv) == 6
-        and sys.argv[1:3] == ["_runtime-server", "--vault"]
-        and sys.argv[4] == "--foundation-cache"
+        and sys.argv[4] == "--bridge-asset"
+        and sys.argv[6] == "--bridge-sha256"
     )
+    extra_arguments: dict[str, str] = {}
+    if valid:
+        for index in range(8, len(sys.argv), 2):
+            option = sys.argv[index]
+            if (
+                option not in {
+                    "--foundation-cache",
+                    "--follow-up-cache",
+                    "--follow-up-release",
+                }
+                or option in extra_arguments
+            ):
+                valid = False
+                break
+            extra_arguments[option] = sys.argv[index + 1]
+    if (
+        ("--follow-up-cache" in extra_arguments)
+        != ("--follow-up-release" in extra_arguments)
+    ):
+        valid = False
     if not valid:
         raise SystemExit("released journey executor has no standalone interface")
     try:
+        follow_up_release = (
+            json.loads(extra_arguments["--follow-up-release"])
+            if "--follow-up-release" in extra_arguments
+            else None
+        )
+        if follow_up_release is not None and not isinstance(
+            follow_up_release, Mapping
+        ):
+            raise ExecutorError("follow-up release identity is malformed")
         raise SystemExit(
             _runtime_server(
                 Path(sys.argv[3]),
+                bridge_asset=Path(sys.argv[5]),
+                bridge_sha256=sys.argv[7],
                 foundation_cache=(
-                    Path(sys.argv[5]) if len(sys.argv) == 6 else None
+                    Path(extra_arguments["--foundation-cache"])
+                    if "--foundation-cache" in extra_arguments
+                    else None
                 ),
+                follow_up_cache=(
+                    Path(extra_arguments["--follow-up-cache"])
+                    if "--follow-up-cache" in extra_arguments
+                    else None
+                ),
+                follow_up_release=follow_up_release,
             )
         )
     except Exception as error:  # noqa: BLE001

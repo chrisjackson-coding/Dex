@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 import subprocess
@@ -389,6 +390,61 @@ def test_installer_created_split_topology_preserves_the_exact_starting_release(
             official_release_commit=official_commit,
             official_release_tree=official_tree,
         )
+
+
+def test_clean_split_package_evidence_has_no_tags_or_remote_tracking_refs(
+    tmp_path: Path,
+) -> None:
+    source = _repository(tmp_path)
+    tag = _tag_release(source, "1.79.0", "clean package")
+    commit = _git(source, "rev-parse", f"{tag}^{{commit}}")
+    vault = tmp_path / "vault"
+    brain = vault / ".dex/brain.git"
+    archive = vault / ".dex/pre-split-archive.git"
+    (vault / ".git").mkdir(parents=True)
+    archive.mkdir(parents=True)
+    subprocess.run(["git", "init", "--bare", "--quiet", str(brain)], check=True)
+    subprocess.run(
+        ["git", f"--git-dir={brain}", "fetch", "--quiet", "--no-tags", str(source), f"+{commit}:refs/dex/installed"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", f"--git-dir={brain}", "update-ref", "refs/heads/release", commit],
+        check=True,
+    )
+    (vault / ".git/dex-vault-v2").write_text(
+        json.dumps({"schemaVersion": 1, "role": "vault"}) + "\n"
+    )
+    (brain / "dex-brain-v2").write_text(
+        json.dumps({"schemaVersion": 1, "role": "brain", "installed": commit}) + "\n"
+    )
+    topology = vault / "System/.dex/topology.json"
+    topology.parent.mkdir(parents=True)
+    topology.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "topology": "brain-vault-split",
+                "vaultGitDir": ".git",
+                "brainGitDir": ".dex/brain.git",
+                "archiveGitDir": ".dex/pre-split-archive.git",
+                "installedRelease": commit,
+            }
+        )
+        + "\n"
+    )
+
+    assert release_fleet._initial_install_evidence(vault, {}) == {
+        "topology": "brain-vault-split",
+        "brain_refs": ["refs/dex/installed", "refs/heads/release"],
+    }
+
+    subprocess.run(
+        ["git", f"--git-dir={brain}", "update-ref", "refs/remotes/origin/release", commit],
+        check=True,
+    )
+    with pytest.raises(release_fleet.FleetError, match="without tags or remote-tracking refs"):
+        release_fleet._initial_install_evidence(vault, {})
 
 
 @pytest.mark.parametrize(
@@ -1028,6 +1084,23 @@ def _write_update_surface(repo: Path) -> None:
     rescue = repo / release_fleet.UPDATE_RESCUE_RELATIVE
     rescue.parent.mkdir(parents=True, exist_ok=True)
     rescue.write_text("# Published rescue\n", encoding="utf-8")
+
+
+def _write_current_protocol_source(repo: Path) -> None:
+    _write_update_surface(repo)
+    for relative in (
+        "scripts/dex_update_bridge.py",
+        "scripts/release_fleet.py",
+        "scripts/release_fleet_executor.py",
+    ):
+        source = repo / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes((release_fleet.PROJECT_ROOT / relative).read_bytes())
+    protocol_path = repo / release_fleet.UPDATE_JOURNEY_RELATIVE
+    protocol_path.parent.mkdir(parents=True, exist_ok=True)
+    protocol_path.write_bytes(
+        (release_fleet.PROJECT_ROOT / release_fleet.UPDATE_JOURNEY_RELATIVE).read_bytes()
+    )
 
 
 def _write_starting_manifest(root: Path, releases: tuple[release_fleet.DistributionRelease, ...]) -> Path:
@@ -1674,6 +1747,51 @@ def test_fixture_python_proves_real_venv_and_local_dependencies_before_doctor(
     assert not marker.exists()
 
 
+def test_fixture_python_pre_bridge_proof_does_not_require_modern_mcp(
+    tmp_path: Path,
+) -> None:
+    runtime = _current_base_python_runtime()
+    vault = tmp_path / "vault"
+    fixture_root = vault / ".venv"
+    fixture_bin = fixture_root / "bin"
+    fixture_bin.mkdir(parents=True)
+    (fixture_bin / "python").symlink_to(runtime.resolved_python)
+    (fixture_root / "pyvenv.cfg").write_text(
+        "\n".join(
+            (
+                f"home = {runtime.resolved_python.parent}",
+                "include-system-site-packages = false",
+                f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    site_packages = (
+        fixture_root
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    yaml_package = site_packages / "yaml"
+    yaml_package.mkdir(parents=True)
+    yaml_origin = yaml_package / "__init__.py"
+    yaml_origin.write_text("# fixture-local PyYAML\n", encoding="utf-8")
+
+    fixture_python = release_fleet.resolve_fixture_python(
+        vault,
+        trusted_python=runtime,
+        required_dependencies=release_fleet.PRE_BRIDGE_REQUIRED_PYTHON_DEPENDENCIES,
+    )
+
+    assert fixture_python.dependency_origins == (("yaml", str(yaml_origin)),)
+    with pytest.raises(
+        release_fleet.FleetError,
+        match="fixture venv dependency is unavailable: mcp",
+    ):
+        release_fleet.resolve_fixture_python(vault, trusted_python=runtime)
+
+
 def test_journey_fails_closed_before_building_when_release_has_no_executor(
     tmp_path: Path,
 ) -> None:
@@ -1711,11 +1829,172 @@ def test_journey_refuses_an_undeclared_host_platform(
         )
 
 
+def test_journey_refuses_controller_bridge_without_released_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A checkout copy cannot stand in for the bridge a user can download."""
+
+    from core.update.journey_protocol import load_update_journey_protocol
+
+    protocol_bytes = (
+        release_fleet.PROJECT_ROOT / release_fleet.UPDATE_JOURNEY_RELATIVE
+    ).read_bytes()
+    protocol = load_update_journey_protocol(protocol_bytes)
+    start = release_fleet.DistributionRelease(
+        tag="dist/release/v1.79.0-aaaaaaa",
+        version="1.79.0",
+        commit="a" * 40,
+        tree="e" * 40,
+    )
+    foundation = release_fleet.ImmutableRelease(
+        tag=protocol.foundation["tag"],
+        tag_object=protocol.foundation["tag_object"],
+        commit=protocol.foundation["commit"],
+        tree=protocol.foundation["tree"],
+        version=protocol.foundation["version"],
+    )
+    follow_up = release_fleet.ImmutableRelease(
+        tag="dist/release/v1.81.6-bbbbbbb",
+        tag_object="c" * 40,
+        commit="b" * 40,
+        tree="d" * 40,
+        version="1.81.6",
+    )
+    monkeypatch.setattr(release_fleet.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        release_fleet, "discover_distribution_releases", lambda _repo: (start,)
+    )
+    monkeypatch.setattr(
+        release_fleet,
+        "resolve_immutable_release",
+        lambda _repo, tag: foundation if tag == foundation.tag else follow_up,
+    )
+    monkeypatch.setattr(
+        release_fleet,
+        "_optional_tag_file",
+        lambda _repo, _tag, relative: (
+            protocol_bytes
+            if relative == release_fleet.UPDATE_JOURNEY_RELATIVE
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        release_fleet,
+        "_verify_released_protocol_artifacts",
+        lambda _repo, _release, _protocol: "f" * 40,
+    )
+
+    with pytest.raises(
+        release_fleet.FleetError,
+        match="standalone released bridge asset is required",
+    ):
+        release_fleet.run_journey(
+            tmp_path,
+            output=tmp_path / "output",
+            starting_tag=start.tag,
+            foundation_tag=foundation.tag,
+            follow_up_tag=follow_up.tag,
+        )
+
+    assert not (tmp_path / "output").exists()
+
+
+def test_standalone_bridge_asset_refuses_a_checksum_not_shipped_for_its_bytes(
+    tmp_path: Path,
+) -> None:
+    from core.update.journey_protocol import load_update_journey_protocol
+
+    protocol = load_update_journey_protocol(
+        (release_fleet.PROJECT_ROOT / release_fleet.UPDATE_JOURNEY_RELATIVE).read_bytes()
+    )
+    follow_up = release_fleet.ImmutableRelease(
+        tag="dist/release/v1.81.6-bbbbbbb",
+        tag_object="c" * 40,
+        commit="b" * 40,
+        tree="d" * 40,
+        version="1.81.6",
+    )
+    asset = tmp_path / "dex-update-bridge-v1.81.6.py"
+    asset.write_bytes(
+        (release_fleet.PROJECT_ROOT / protocol.bridge.artifact.source_path).read_bytes()
+    )
+    checksum = tmp_path / "dex-update-bridge-v1.81.6.py.sha256"
+    checksum.write_text(f"{'0' * 64}  {asset.name}\n", encoding="utf-8")
+
+    with pytest.raises(release_fleet.FleetError, match="checksum is invalid"):
+        release_fleet._verify_standalone_bridge_asset(
+            tmp_path,
+            source_commit="f" * 40,
+            follow_up=follow_up,
+            protocol=protocol,
+            bridge_asset=asset,
+            bridge_checksum=checksum,
+        )
+
+
+def test_case_executor_collects_only_failures_after_case_execution_starts() -> None:
+    from scripts import release_fleet_executor
+
+    def case_failure(*, _case_started, **_kwargs):
+        _case_started()
+        raise release_fleet_executor.ExecutorError("foundation Doctor is unhealthy")
+
+    with pytest.raises(
+        release_fleet.CaseJourneyFailure,
+        match="foundation Doctor is unhealthy",
+    ):
+        release_fleet.run_case_executor("v1.61.0", case_failure)
+
+    def integrity_failure(**_kwargs):
+        raise release_fleet_executor.ExecutorError("released executor identity changed")
+
+    with pytest.raises(
+        release_fleet_executor.ExecutorError,
+        match="released executor identity changed",
+    ):
+        release_fleet.run_case_executor("v1.61.0", integrity_failure)
+
+    expected = {
+        "tag": "dist/release/v1.81.17-aaaaaaa",
+        "tag_object": "b" * 40,
+        "commit": "a" * 40,
+        "tree": "c" * 40,
+        "version": "1.81.17",
+        "channel": "stable",
+    }
+    delivered = {
+        "tag": "dist/release/v1.81.18-ddddddd",
+        "tag_object": "e" * 40,
+        "commit": "d" * 40,
+        "tree": "f" * 40,
+        "version": "1.81.18",
+        "channel": "stable",
+    }
+
+    def public_route_drift(*, _case_started, **_kwargs):
+        _case_started()
+        raise release_fleet_executor.PublicRouteDriftError(expected, delivered)
+
+    with pytest.raises(
+        release_fleet_executor.PublicRouteDriftError,
+        match="public release route drifted",
+    ) as failure:
+        release_fleet.run_case_executor("v1.61.0", public_route_drift)
+
+    assert failure.value.expected_release == expected
+    assert failure.value.delivered_release == delivered
+
+
 @pytest.mark.parametrize("split_topology", [False, True])
+@pytest.mark.parametrize("controlled_approvals", [False, True])
+@pytest.mark.parametrize("fixture_failure", [False, True])
 def test_journey_delegates_only_after_released_source_and_fixture_are_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     split_topology: bool,
+    controlled_approvals: bool,
+    fixture_failure: bool,
 ) -> None:
     from core.update.journey_protocol import load_update_journey_protocol
     from scripts import release_fleet_executor
@@ -1745,6 +2024,16 @@ def test_journey_delegates_only_after_released_source_and_fixture_are_bound(
         tree="e" * 40,
     )
     source_commit = "f" * 40
+    bridge_bytes = (
+        release_fleet.PROJECT_ROOT / protocol.bridge.artifact.source_path
+    ).read_bytes()
+    bridge_asset = tmp_path / f"dex-update-bridge-v{follow_up.version}.py"
+    bridge_asset.write_bytes(bridge_bytes)
+    bridge_checksum = tmp_path / f"{bridge_asset.name}.sha256"
+    bridge_checksum.write_text(
+        f"{hashlib.sha256(bridge_bytes).hexdigest()}  {bridge_asset.name}\n",
+        encoding="utf-8",
+    )
     captured: dict[str, object] = {}
     environment_kwargs: dict[str, object] = {}
     remote_events: list[str] = []
@@ -1803,12 +2092,28 @@ def test_journey_delegates_only_after_released_source_and_fixture_are_bound(
         },
     )
     monkeypatch.setattr(release_fleet, "resolve_trusted_node_runtime", object)
-    monkeypatch.setattr(release_fleet, "resolve_trusted_python_runtime", object)
+    trusted_python = object()
+    monkeypatch.setattr(
+        release_fleet, "resolve_trusted_python_runtime", lambda: trusted_python
+    )
+
     def case_environment(*_args, **kwargs):
         environment_kwargs.update(kwargs)
         return {}
 
     monkeypatch.setattr(release_fleet, "_case_environment", case_environment)
+    monkeypatch.setattr(
+        release_fleet,
+        "_initial_install_evidence",
+        lambda _vault, _environment: (
+            {
+                "topology": "brain-vault-split",
+                "brain_refs": ["refs/dex/installed", "refs/heads/release"],
+            }
+            if split_topology
+            else {"topology": "legacy-monolithic", "brain_refs": []}
+        ),
+    )
 
     def build_case(
         _repo,
@@ -1818,6 +2123,8 @@ def test_journey_delegates_only_after_released_source_and_fixture_are_bound(
         environment,
         keep_official_fetch,
     ):
+        if fixture_failure:
+            raise release_fleet.FleetError("fixture provenance changed")
         assert environment == {}
         assert keep_official_fetch is True
         vault = output / release_fleet.safe_case_name(release)
@@ -1870,7 +2177,13 @@ def test_journey_delegates_only_after_released_source_and_fixture_are_bound(
         return Run()
 
     monkeypatch.setattr(release_fleet, "build_installed_fixture", build_case)
-    monkeypatch.setattr(release_fleet, "resolve_fixture_python", lambda *_args, **_kwargs: object())
+    fixture_python_calls: list[dict[str, object]] = []
+
+    def resolve_fixture(*_args, **kwargs):
+        fixture_python_calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(release_fleet, "resolve_fixture_python", resolve_fixture)
     monkeypatch.setattr(
         release_fleet,
         "_prepare_installer_release_remote",
@@ -1886,25 +2199,63 @@ def test_journey_delegates_only_after_released_source_and_fixture_are_bound(
     )
     monkeypatch.setattr(release_fleet_executor, "execute_journey", execute)
 
+    if fixture_failure:
+        with pytest.raises(release_fleet.FleetError) as failure:
+            release_fleet.run_journey(
+                tmp_path,
+                output=tmp_path / "output",
+                starting_tag=start.tag,
+                foundation_tag=foundation.tag,
+                follow_up_tag=follow_up.tag,
+                bridge_asset=bridge_asset,
+                bridge_checksum=bridge_checksum,
+                controlled_approvals=controlled_approvals,
+                follow_up_cache=tmp_path / "candidate-release.git",
+            )
+        assert type(failure.value) is release_fleet.FleetError
+        assert str(failure.value) == "fixture provenance changed"
+        return
+
     run = release_fleet.run_journey(
         tmp_path,
         output=tmp_path / "output",
         starting_tag=start.tag,
         foundation_tag=foundation.tag,
         follow_up_tag=follow_up.tag,
+        bridge_asset=bridge_asset,
+        bridge_checksum=bridge_checksum,
+        controlled_approvals=controlled_approvals,
+        follow_up_cache=tmp_path / "candidate-release.git",
     )
 
     assert run.case == {"starting_tag": start.tag}
     assert captured["source_commit"] == source_commit
     assert captured["foundation_release"] == foundation.identity()
     assert captured["follow_up_release"] == follow_up.identity()
+    assert captured["follow_up_cache"] == tmp_path / "candidate-release.git"
     assert captured["user_owned_paths"] == tuple(release_fleet.USER_FIXTURES)
+    assert captured["bridge_asset_evidence"]["source"] == "released-standalone-asset"
+    assert captured["initial_install_evidence"]["topology"] == (
+        "brain-vault-split" if split_topology else "legacy-monolithic"
+    )
+    if controlled_approvals:
+        approval_input = captured["input_fn"]
+        assert callable(approval_input)
+        assert approval_input("exact controlled prompt") == protocol.bridge.approval_word
+    else:
+        assert "input_fn" not in captured
     assert environment_kwargs["pip_cache_dir"] == (
         tmp_path / "output/.fixture-controller/pip"
     )
     assert environment_kwargs["controller_root"] == (
         tmp_path / "output/.fixture-controller"
     )
+    assert fixture_python_calls == [
+        {
+            "trusted_python": trusted_python,
+            "required_dependencies": release_fleet.PRE_BRIDGE_REQUIRED_PYTHON_DEPENDENCIES,
+        }
+    ]
     assert remote_events == (
         ["split-official-read-retained", "execute", "remote-closed"]
         if split_topology
@@ -1975,6 +2326,172 @@ def test_shipped_update_surface_requires_and_exposes_the_released_executor(
     classification = release_fleet.classify_historic_update_surface(repo, distribution)
     assert classification["machine_executable"] is True
     assert classification["route_classification"] == "machine-protocol-released-executor"
+
+
+def test_shipped_update_surface_records_catalogless_semantic_protocol_as_unbound(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    _write_current_protocol_source(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "semantic release source")
+    source_commit = _git(repo, "rev-parse", "HEAD")
+    semantic_tag = "v1.81.1"
+    _git(repo, "tag", semantic_tag)
+    (repo / "release-fix.txt").write_text("packaging fix\n", encoding="utf-8")
+    _git(repo, "add", "release-fix.txt")
+    _git(repo, "commit", "--quiet", "-m", "release-only fix")
+    package_source_commit = _git(repo, "rev-parse", "HEAD")
+
+    catalog = repo / "System/.release-catalog.json"
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text(
+        json.dumps(
+            {
+                "catalog_version": 1,
+                "release": {"source_commit": package_source_commit},
+                "items": [],
+                "integrity": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _tag_release(repo, "1.81.1", "immutable package")
+    semantic_release = next(
+        release
+        for release in release_fleet.discover_distribution_releases(repo)
+        if release.tag == semantic_tag
+    )
+
+    surface = release_fleet.shipped_update_surface(repo, semantic_release)
+
+    assert surface["release"] == {
+        "tag": semantic_tag,
+        "tag_object": source_commit,
+        "commit": source_commit,
+        "tree": _git(repo, "rev-parse", f"{semantic_tag}^{{tree}}"),
+        "version": "1.81.1",
+        "channel": "stable",
+    }
+    assert surface["machine_executable"] is False
+    assert surface["journey_protocol"]["status"] == "present-unbound"
+    assert surface["journey_protocol"]["source_commit"] == source_commit
+    classification = release_fleet.classify_historic_update_surface(
+        repo, semantic_release
+    )
+    assert classification["machine_executable"] is False
+    assert classification["route_classification"] == "protocol-present-unbound-source"
+
+
+def test_shipped_update_surface_keeps_catalog_strict_for_immutable_release(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    _write_current_protocol_source(repo)
+    tag = _tag_release(repo, "1.81.1", "catalog-less immutable package")
+    release = release_fleet.resolve_immutable_release(repo, tag)
+
+    with pytest.raises(release_fleet.FleetError, match="release-catalog"):
+        release_fleet.shipped_update_surface(repo, release)
+
+
+def test_shipped_update_surface_rejects_malformed_semantic_catalog(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    _write_current_protocol_source(repo)
+    catalog = repo / "System/.release-catalog.json"
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text("{}\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "semantic release with malformed catalog")
+    tag = "v1.81.2"
+    _git(repo, "tag", tag)
+    release = next(
+        item
+        for item in release_fleet.discover_distribution_releases(repo)
+        if item.tag == tag
+    )
+
+    with pytest.raises(
+        release_fleet.FleetError, match="release catalog has an invalid shape"
+    ):
+        release_fleet.shipped_update_surface(repo, release)
+
+
+def test_shipped_update_surface_propagates_semantic_catalog_inspection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    _write_current_protocol_source(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "semantic release source")
+    tag = "v1.81.2"
+    _git(repo, "tag", tag)
+    release = next(
+        item
+        for item in release_fleet.discover_distribution_releases(repo)
+        if item.tag == tag
+    )
+    real_run = release_fleet.subprocess.run
+
+    def fail_catalog_inspection(command: list[str], *args: object, **kwargs: object):
+        if "ls-tree" in command and command[-1] == "System/.release-catalog.json":
+            return release_fleet.subprocess.CompletedProcess(
+                command,
+                128,
+                stdout=b"",
+                stderr=b"fatal: object database read failure\n",
+            )
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(release_fleet.subprocess, "run", fail_catalog_inspection)
+
+    with pytest.raises(release_fleet.FleetError, match="object database read failure"):
+        release_fleet.shipped_update_surface(repo, release)
+
+
+def test_shipped_update_surface_does_not_generalize_mutated_v1810_pin(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    _write_current_protocol_source(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "different v1.81.0 source")
+    tag = "v1.81.0"
+    _git(repo, "tag", tag)
+    release = next(
+        item
+        for item in release_fleet.discover_distribution_releases(repo)
+        if item.tag == tag
+    )
+
+    with pytest.raises(release_fleet.FleetError, match="release-catalog"):
+        release_fleet.shipped_update_surface(repo, release)
+
+
+def test_shipped_update_surface_rejects_catalogless_semantic_protocol_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    _write_current_protocol_source(repo)
+    executor = repo / "scripts/release_fleet_executor.py"
+    executor.write_bytes(executor.read_bytes() + b"\n# unexpected mutation\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "mutated semantic protocol source")
+    tag = "v1.81.2"
+    _git(repo, "tag", tag)
+    release = next(
+        item
+        for item in release_fleet.discover_distribution_releases(repo)
+        if item.tag == tag
+    )
+
+    with pytest.raises(
+        release_fleet.FleetError, match="does not match its protocol hash"
+    ):
+        release_fleet.shipped_update_surface(repo, release)
 
 
 def test_shipped_update_surface_rejects_a_protocol_with_an_unknown_operation(
