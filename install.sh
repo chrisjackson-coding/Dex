@@ -308,6 +308,15 @@ if [ -n "$VENV_PYTHON" ] && [ -f "$VENV_PYTHON" ]; then
 fi
 DEX_LIFECYCLE_PYTHON="$DEX_ADOPTION_PYTHON" node core/provision.cjs --path "$(pwd)" --adopt --lifecycle-only
 
+# Tell the user which chat app to use for the final setup step.
+if command -v claude &> /dev/null; then
+    DEX_SETUP_INSTRUCTION="In Claude Code chat, type: /setup"
+elif command -v cursor &> /dev/null || { [[ "$OSTYPE" == "darwin"* ]] && [ -d "/Applications/Cursor.app" ]; }; then
+    DEX_SETUP_INSTRUCTION="In Cursor chat, type: /setup"
+else
+    DEX_SETUP_INSTRUCTION="In your AI app chat, type: /setup"
+fi
+
 # Success
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -324,7 +333,7 @@ if [[ "$WORK_MCP_STATUS" == *"Needs"* ]]; then
 fi
 echo ""
 echo "Next steps:"
-echo "  1. In Cursor chat, type: /setup"
+echo "  1. $DEX_SETUP_INSTRUCTION"
 echo "  2. Answer the setup questions (~5 minutes)"
 echo "  3. Start using Dex!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
