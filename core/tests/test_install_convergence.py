@@ -185,6 +185,8 @@ def test_install_names_detected_claude_code_before_setup(tmp_path: Path) -> None
     result, _ = _run_install(tmp_path, "zip", chat_app="claude")
 
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "Start a new Claude Code chat in this folder" in result.stdout
+    assert "a new chat loads Dex's MCP servers" in result.stdout
     assert "In Claude Code chat, type: /setup" in result.stdout
 
 
@@ -192,4 +194,6 @@ def test_install_names_detected_cursor_before_setup(tmp_path: Path) -> None:
     result, _ = _run_install(tmp_path, "zip", chat_app="cursor")
 
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "Start a new Cursor chat in this folder" in result.stdout
+    assert "a new chat loads Dex's MCP servers" in result.stdout
     assert "In Cursor chat, type: /setup" in result.stdout

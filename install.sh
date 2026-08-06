@@ -333,7 +333,9 @@ if [[ "$WORK_MCP_STATUS" == *"Needs"* ]]; then
 fi
 echo ""
 echo "Next steps:"
-echo "  1. In $DEX_CHAT_APP chat, type: /setup"
-echo "  2. Answer the setup questions (~5 minutes)"
-echo "  3. Start using Dex!"
+echo "  1. Start a new $DEX_CHAT_APP chat in this folder"
+echo "     (a new chat loads Dex's MCP servers)"
+echo "  2. In $DEX_CHAT_APP chat, type: /setup"
+echo "  3. Answer the setup questions (~5 minutes)"
+echo "  4. Start using Dex!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
