@@ -7,6 +7,19 @@ All notable changes to Dex will be documented in this file.
 
 ---
 
+## [1.81.19] — 🧭 Doctor adoption counts now match the updater (2026-08-06)
+
+Doctor and `/dex-update` were describing the same adoption state with different
+labels. Doctor now reads the lifecycle ledger just like the updater, so an item
+already adopted is reported as **already adopted**, not as newly adoptable.
+
+**What this fixes for you:**
+
+* **One clear count everywhere.** “Ready to adopt” and “Already adopted” now
+  describe the same state in Doctor and the update preview.
+* **No adoption behavior changes.** This is a reporting fix only; the existing
+  safety checks, receipts, and holdbacks remain unchanged.
+
 ## [1.81.5] — 🧾 Historic installs receive matching migration metadata (2026-07-31)
 
 The public 1.49.0 journey crossed the repaired history proof, then found that
