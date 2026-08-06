@@ -5,6 +5,18 @@ product persona — the root `CLAUDE.md` is seed prose shipped into user vaults
 ("You are Dex…"); it is a product surface, not contributor guidance. Edit it like
 UI copy, not like docs.
 
+## Communicating with Dave
+
+Dave is a non-technical founder. Lead with the outcome, why it matters, and
+whether anything is broken. Use plain "smart friend" language and explain an
+unavoidable technical term once, in one short sentence.
+
+When work is complete, say what changed, how it was verified, and whether it is
+implemented, committed, merged, published, or live. If Dave must act, put a
+short **What I need from you** block first with the exact action, where to do it,
+why only he can do it, and what will happen next. Never ask Dave to diagnose
+Git, mounts, permissions, credentials, or similar mechanics.
+
 ## Orient before you touch anything
 
 1. Run `/dex-orient` (or `python3 scripts/dex_state.py --digest`) — released
