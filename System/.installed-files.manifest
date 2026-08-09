@@ -550,6 +550,8 @@
 .claude/skills/diff-profile/SKILL.md
 .claude/skills/diff-remove/SKILL.md
 .claude/skills/enable-semantic-search/SKILL.md
+.claude/skills/feedback/SKILL.md
+.claude/skills/feedback/scripts/feedback_client.py
 .claude/skills/getting-started/SKILL.md
 .claude/skills/google-workspace-setup/SKILL.md
 .claude/skills/granola-setup/SKILL.md
@@ -933,6 +935,7 @@ core/tests/fixtures/entity_pages/render-company.expected.md
 core/tests/fixtures/entity_pages/render-company.input.json
 core/tests/fixtures/entity_pages/render-person.expected.md
 core/tests/fixtures/entity_pages/render-person.input.json
+core/tests/fixtures/releases-feed.md
 core/tests/fixtures/sync-folder-vectors.json
 core/tests/fixtures/vault/00-Inbox/Daily_Plans/.gitkeep
 core/tests/fixtures/vault/00-Inbox/Ideas/.gitkeep
@@ -1038,6 +1041,8 @@ core/tests/test_entity_index.py
 core/tests/test_entity_pages.py
 core/tests/test_error_queue_lifecycle.py
 core/tests/test_feature_status.py
+core/tests/test_feedback_client_script.py
+core/tests/test_feedback_sweep.py
 core/tests/test_first_run_trigger.py
 core/tests/test_fixture_vault.py
 core/tests/test_founder_content_gate.py
@@ -1096,10 +1101,12 @@ core/tests/test_relationships_feed.py
 core/tests/test_release_catalog.py
 core/tests/test_release_catalog_generation.py
 core/tests/test_release_channel.py
+core/tests/test_release_feed.py
 core/tests/test_release_fleet.py
 core/tests/test_release_fleet_acceptance.py
 core/tests/test_release_fleet_executor.py
 core/tests/test_release_fleet_failure_diagnostics.py
+core/tests/test_release_notes_sweep.py
 core/tests/test_release_tag_uniqueness.py
 core/tests/test_review_retirement.py
 core/tests/test_ritual_intelligence_entrypoints.py
@@ -1157,6 +1164,7 @@ core/utils/dex_logger.py
 core/utils/doctor.py
 core/utils/entity_pages.py
 core/utils/feature_status.py
+core/utils/feedback_sweep.py
 core/utils/health_session.py
 core/utils/health_telemetry.py
 core/utils/history_hygiene.py
@@ -1171,6 +1179,8 @@ core/utils/qmd_indexer.py
 core/utils/qmd_query.py
 core/utils/reference_formatter.py
 core/utils/release_channel.py
+core/utils/release_feed.py
+core/utils/release_notes_sweep.py
 core/utils/safe_autosave.py
 core/utils/session_health.py
 core/utils/smoke.py
@@ -1205,6 +1215,7 @@ docs/credential-remediation.md
 docs/customization-migration-threat-model.md
 docs/dex-doctor-spec.md
 docs/dexdiff-runtime-boundary.md
+docs/feedback-loop-contract.md
 docs/health-telemetry.md
 docs/merge-gates.md
 docs/plans/2026-07-23-brain-vault-existing-user-readiness.md
