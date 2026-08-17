@@ -11,10 +11,12 @@ import os
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from core.utils import doctor
 from core.utils.claude_composition import (
     RecomposeUnavailable,
     compose_current,
@@ -138,3 +140,68 @@ def test_touch_without_content_change_settles(tmp_path):
     assert needs_recompose(root) is True, "gate trips on touch, by design"
     assert recompose_if_needed(root) == "current", "byte check finds no change"
     assert needs_recompose(root) is False, "and the gate stops firing"
+
+
+# --- The Doctor probe -------------------------------------------------------
+#
+# The hook is the fix; this probe is the detector for the hook having failed.
+# An untested detector is the silent-success failure this change exists to
+# remove, so every verdict branch is exercised here.
+
+
+def _context(root: Path) -> doctor.DoctorContext:
+    return doctor.DoctorContext(
+        vault_root=root,
+        repo_root=root,
+        home=root / "home",
+        now=datetime(2026, 8, 17, tzinfo=timezone.utc),
+    )
+
+
+def test_probe_reports_off_when_there_are_no_customisations(tmp_path):
+    """No custom block is healthy optional absence, not a fault to nag about."""
+    result = doctor._probe_claude_composition(_context(_vault(tmp_path, custom=None)))
+
+    assert result.verdict == "OFF"
+    assert result.feature_status == "off"
+
+
+def test_probe_is_ok_when_the_custom_block_is_live(tmp_path):
+    root = _vault(tmp_path)
+    assert recompose_if_needed(root) == "recomposed"
+
+    assert doctor._probe_claude_composition(_context(root)).verdict == "OK"
+
+
+def test_probe_reports_broken_when_claude_has_drifted(tmp_path):
+    """Drift means personal instructions are silently not loaded."""
+    root = _vault(tmp_path)
+    (root / "CLAUDE.md").write_bytes(b"stale, missing the custom block\n")
+
+    result = doctor._probe_claude_composition(_context(root))
+
+    assert result.verdict == "BROKEN"
+    assert "not being loaded" in result.detail
+    assert result.heal is not None and not result.heal.applied
+
+
+def test_probe_reports_broken_when_claude_is_absent_entirely(tmp_path):
+    root = _vault(tmp_path)
+    assert not (root / "CLAUDE.md").exists()
+
+    result = doctor._probe_claude_composition(_context(root))
+
+    assert result.verdict == "BROKEN"
+    assert result.heal is not None
+
+
+def test_probe_reports_unknown_when_it_cannot_check(tmp_path):
+    """Not being able to check must never be reported as a clean result."""
+    root = _vault(tmp_path)
+    (root / "CLAUDE.md").write_bytes(b"anything\n")
+    shutil.rmtree(root / ".dex/brain.git")
+
+    result = doctor._probe_claude_composition(_context(root))
+
+    assert result.verdict == "UNKNOWN"
+    assert "Could not check" in result.detail
