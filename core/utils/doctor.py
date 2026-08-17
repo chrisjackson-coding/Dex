@@ -4768,13 +4768,13 @@ def _probe_claude_composition(context: DoctorContext) -> ProbeResult:
     acceptable: an instruction written five minutes ago is exactly as inert as
     one written five weeks ago.
     """
+    from core.update.apply_update import CompositionError
     from core.utils.claude_composition import (
         CLAUDE,
         CUSTOM,
         RecomposeUnavailable,
         compose_current,
     )
-    from core.update.apply_update import CompositionError
 
     custom_path = context.vault_root / CUSTOM
     if not custom_path.is_file():
@@ -4799,7 +4799,7 @@ def _probe_claude_composition(context: DoctorContext) -> ProbeResult:
         return ProbeResult(
             "BROKEN",
             f"Your customisations cannot be composed ({_one_line(error)}), so they are not loaded",
-            Heal(tier=2, action=f"Check the USER_EXTENSIONS markers in the release template.", applied=False),
+            Heal(tier=2, action="Check the USER_EXTENSIONS markers in the release template.", applied=False),
         )
 
     try:

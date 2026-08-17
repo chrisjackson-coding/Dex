@@ -7,7 +7,10 @@ applied — silently, because the file saved and the content was correct.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -66,7 +69,6 @@ def test_composes_the_custom_block_into_claude(tmp_path):
 def test_recompose_writes_when_custom_is_newer(tmp_path):
     root = _vault(tmp_path)
     (root / "CLAUDE.md").write_bytes(b"stale\n")
-    import os, time
     os.utime(root / "CLAUDE.md", (time.time() - 60, time.time() - 60))
 
     assert needs_recompose(root) is True
@@ -90,10 +92,8 @@ def test_missing_brain_store_reports_unavailable_not_clean(tmp_path):
     change exists to remove.
     """
     root = _vault(tmp_path)
-    import shutil
     shutil.rmtree(root / ".dex/brain.git")
     (root / "CLAUDE.md").write_bytes(b"stale\n")
-    import os, time
     os.utime(root / "CLAUDE.md", (time.time() - 60, time.time() - 60))
 
     with pytest.raises(RecomposeUnavailable):
@@ -123,9 +123,7 @@ def test_existing_claude_is_untouched_when_composition_fails(tmp_path):
     root = _vault(tmp_path)
     marker = b"the file the user already had\n"
     (root / "CLAUDE.md").write_bytes(marker)
-    import os, time
     os.utime(root / "CLAUDE.md", (time.time() - 60, time.time() - 60))
-    import shutil
     shutil.rmtree(root / ".dex/brain.git")
 
     assert recompose_if_needed(root).startswith("unavailable:")
