@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from core.transaction.lock import acquire_owned_lock
+from core.update.apply_update import CompositionError
 from core.utils import doctor
 from core.utils.claude_composition import (
     RecomposeUnavailable,
@@ -136,6 +138,7 @@ def test_touch_without_content_change_settles(tmp_path):
     """The cheap mtime gate may false-positive; the byte check must absorb it."""
     root = _vault(tmp_path)
     assert recompose_if_needed(root) == "recomposed"
+    os.utime(root / "CLAUDE.md", (time.time() - 60, time.time() - 60))
     (root / "CLAUDE-custom.md").touch()
     assert needs_recompose(root) is True, "gate trips on touch, by design"
     assert recompose_if_needed(root) == "current", "byte check finds no change"
@@ -183,6 +186,111 @@ def test_probe_reports_broken_when_claude_has_drifted(tmp_path):
     assert result.verdict == "BROKEN"
     assert "not being loaded" in result.detail
     assert result.heal is not None and not result.heal.applied
+    assert result.heal.action == "Send any message."
+    assert "python" not in result.heal.action.lower()
+
+
+def test_mtime_gate_does_not_repair_stale_claude_written_after_custom(tmp_path):
+    """Doctor's drift case: CLAUDE.md is newer, so the everyday path no-ops."""
+    root = _vault(tmp_path)
+    (root / "CLAUDE.md").write_bytes(b"stale, missing the custom block\n")
+
+    assert needs_recompose(root) is False
+    assert recompose_if_needed(root) == "current"
+    assert (root / "CLAUDE.md").read_bytes() == b"stale, missing the custom block\n"
+
+
+def test_force_recomposes_when_content_has_drifted_but_custom_is_not_newer(tmp_path):
+    """The force/bytes path must write the case the mtime gate cannot see."""
+    root = _vault(tmp_path)
+    (root / "CLAUDE.md").write_bytes(b"stale, missing the custom block\n")
+
+    assert recompose_if_needed(root, force=True) == "recomposed"
+    assert b"Do the thing." in (root / "CLAUDE.md").read_bytes()
+    assert recompose_if_needed(root, force=True) == "current"
+
+
+def test_doctor_heal_repairs_content_drift_when_custom_is_not_newer(tmp_path):
+    """The prescribed heal must actually write, not point at a no-op path."""
+    root = _vault(tmp_path)
+    (root / "CLAUDE.md").write_bytes(b"stale, missing the custom block\n")
+    context = _context(root)
+
+    assert doctor._probe_claude_composition(context).verdict == "BROKEN"
+    action = doctor._heal_claude_composition(context)
+
+    assert action is not None
+    assert "python" not in action.lower()
+    assert b"Do the thing." in (root / "CLAUDE.md").read_bytes()
+    assert doctor._probe_claude_composition(context).verdict == "OK"
+
+
+def test_refuses_to_write_when_mutation_lock_is_held(tmp_path):
+    """A hook must not compose from a stale tag over an in-flight update."""
+    root = _vault(tmp_path)
+    stale = b"stale, must not be overwritten during an update\n"
+    (root / "CLAUDE.md").write_bytes(stale)
+    os.utime(root / "CLAUDE.md", (time.time() - 60, time.time() - 60))
+    assert needs_recompose(root) is True
+
+    release = acquire_owned_lock(root, "transaction:update-in-flight")
+    try:
+        result = recompose_if_needed(root)
+        assert result.startswith("unavailable:")
+        assert (root / "CLAUDE.md").read_bytes() == stale
+        forced = recompose_if_needed(root, force=True)
+        assert forced.startswith("unavailable:")
+        assert (root / "CLAUDE.md").read_bytes() == stale
+    finally:
+        release()
+
+    assert recompose_if_needed(root) == "recomposed"
+    assert b"Do the thing." in (root / "CLAUDE.md").read_bytes()
+
+
+def test_apply_t1_heals_runs_the_force_composition_refresh(tmp_path, monkeypatch):
+    """Doctor --heal must call the force path, not only prescribe a message."""
+    root = _vault(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        doctor,
+        "_heal_claude_composition",
+        lambda context: calls.append(context.vault_root) or "refreshed CLAUDE.md so your customisations are live",
+    )
+    monkeypatch.setattr(doctor, "_repo_shipped_executables", lambda _context: [])
+    monkeypatch.setattr(doctor, "_paths_export_for", lambda _context: {})
+    monkeypatch.setattr(doctor, "_env_permission_finding", lambda _context: None)
+    monkeypatch.setattr(doctor, "_acknowledge_resolved_preflight_errors", lambda _context: 0)
+    monkeypatch.setattr(
+        doctor,
+        "_probe_capability_rooms",
+        lambda _context: doctor.ProbeResult("OK", "rooms"),
+    )
+    context = _context(root)
+    for name in doctor.PARA_PATH_NAMES:
+        context.core_path(name).mkdir(parents=True, exist_ok=True)
+    (root / "core").mkdir(exist_ok=True)
+    (root / "core/paths.json").write_text("{}\n")
+
+    actions, errors = doctor._apply_t1_heals(context)
+
+    assert calls == [root]
+    assert actions["config.claude_composition"] == [
+        "refreshed CLAUDE.md so your customisations are live"
+    ]
+    assert errors == []
+
+
+def test_compose_current_refuses_symlink_custom_file(tmp_path):
+    """A symlink custom file is CompositionError on the update path too."""
+    root = _vault(tmp_path, custom=None)
+    target = root / "elsewhere.md"
+    target.write_bytes(b"must not be followed\n")
+    (root / "CLAUDE-custom.md").symlink_to(target)
+
+    with pytest.raises(CompositionError, match="not a regular file"):
+        compose_current(root)
+    assert recompose_if_needed(root, force=True).startswith("unavailable:composition refused:")
 
 
 def test_probe_reports_broken_when_claude_is_absent_entirely(tmp_path):

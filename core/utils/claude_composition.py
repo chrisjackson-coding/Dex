@@ -13,8 +13,9 @@ between updates makes that confirmation true.
 
 Nothing here is new state. The output is exactly what the next update would
 produce from the same two inputs, so this is the same result arriving earlier.
-That is why it is safe to write outside the lifecycle transaction: there is
-nothing to roll back to that differs from what an update would write anyway.
+The write still takes the shared vault mutation lock — or refuses when an
+update already holds it — so a hook cannot compose from a stale activation
+tag and overwrite a mid-apply CLAUDE.md.
 
 Two-stage by design. The cheap gate is a pair of `stat` calls and is what runs
 on almost every invocation; the expensive path only runs when the custom file
@@ -26,7 +27,13 @@ import re
 import subprocess
 from pathlib import Path
 
-from core.update.apply_update import CompositionError, _regenerate_claude
+from core.transaction.lock import (
+    LockBusyError,
+    LockContentionError,
+    LockError,
+    acquire_owned_lock,
+)
+from core.update.apply_update import CompositionError, _compose_claude
 
 CLAUDE = "CLAUDE.md"
 CUSTOM = "CLAUDE-custom.md"
@@ -100,18 +107,10 @@ def compose_current(vault_root: Path) -> bytes:
     if shown.returncode != 0 or not shown.stdout:
         raise RecomposeUnavailable(f"release template missing from {tag}")
 
-    custom_path = vault_root / CUSTOM
-    if not custom_path.is_file():
-        # No custom block is a valid state, not drift. The composer's own
-        # contract returns the release blob unchanged in this case.
-        return shown.stdout
-    try:
-        custom = custom_path.read_bytes()
-    except OSError as error:
-        raise RecomposeUnavailable(f"{CUSTOM} unreadable: {error}") from error
-    if not custom:
-        return shown.stdout
-    return _regenerate_claude(shown.stdout, custom)
+    # The shipped composer owns the custom-file guards. A symlink
+    # CLAUDE-custom.md is CompositionError on the update path and must be
+    # here too, or the byte-identical claim is not locked to that composer.
+    return _compose_claude(shown.stdout, vault_root)
 
 
 def needs_recompose(vault_root: Path) -> bool:
@@ -134,34 +133,56 @@ def needs_recompose(vault_root: Path) -> bool:
         return False
 
 
-def recompose_if_needed(vault_root: Path) -> str:
+def recompose_if_needed(vault_root: Path, *, force: bool = False) -> str:
     """Bring CLAUDE.md up to date when it has fallen behind the custom block.
 
     Returns one of: "current", "recomposed", "unavailable:<reason>".
+
+    The everyday path is mtime-gated. Pass ``force=True`` to compare bytes
+    and write when content has drifted even if CLAUDE-custom.md is not newer
+    — the case Doctor detects after a restore or a raced hook write.
+
+    Takes the shared vault mutation lock before composing or writing. If an
+    update holds it, refuses rather than composing from a stale activation
+    tag and overwriting the in-flight CLAUDE.md.
 
     Never writes a partial file. A composition failure leaves the existing
     CLAUDE.md exactly as it was, because a half-written instruction file is
     worse than a stale one.
     """
-    if not needs_recompose(vault_root):
+    if not force and not needs_recompose(vault_root):
         return "current"
-    try:
-        expected = compose_current(vault_root)
-    except RecomposeUnavailable as error:
-        return f"unavailable:{error}"
-    except CompositionError as error:
-        return f"unavailable:composition refused: {error}"
 
-    claude = vault_root / CLAUDE
     try:
-        if claude.is_file() and claude.read_bytes() == expected:
-            # Content already correct; the mtime gate tripped on a touch. Nudge
-            # the timestamp so the gate stops firing on every prompt.
-            claude.touch()
+        release = acquire_owned_lock(vault_root, "claude-composition")
+    except LockBusyError as error:
+        return f"unavailable:{error}"
+    except (LockContentionError, LockError) as error:
+        return f"unavailable:{error}"
+
+    try:
+        if not force and not needs_recompose(vault_root):
             return "current"
-        tmp = claude.with_suffix(claude.suffix + ".recompose-tmp")
-        tmp.write_bytes(expected)
-        tmp.replace(claude)
-    except OSError as error:
-        return f"unavailable:could not write {CLAUDE}: {error}"
-    return "recomposed"
+        try:
+            expected = compose_current(vault_root)
+        except RecomposeUnavailable as error:
+            return f"unavailable:{error}"
+        except CompositionError as error:
+            return f"unavailable:composition refused: {error}"
+
+        claude = vault_root / CLAUDE
+        try:
+            if claude.is_file() and claude.read_bytes() == expected:
+                # Content already correct; the mtime gate tripped on a touch.
+                # Nudge the timestamp so the everyday gate stops firing.
+                if not force:
+                    claude.touch()
+                return "current"
+            tmp = claude.with_suffix(claude.suffix + ".recompose-tmp")
+            tmp.write_bytes(expected)
+            tmp.replace(claude)
+        except OSError as error:
+            return f"unavailable:could not write {CLAUDE}: {error}"
+        return "recomposed"
+    finally:
+        release()

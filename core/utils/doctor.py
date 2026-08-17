@@ -961,6 +961,13 @@ def _apply_t1_heals(context: DoctorContext) -> tuple[dict[str, list[str]], list[
     except Exception as error:
         errors.append(f"Capability-room heal failed: {_one_line(error)}")
 
+    try:
+        composition_action = _heal_claude_composition(context)
+        if composition_action:
+            actions.setdefault("config.claude_composition", []).append(composition_action)
+    except Exception as error:
+        errors.append(f"CLAUDE.md refresh failed: {_one_line(error)}")
+
     if planned:
         try:
             preview = lifecycle_service._preview_transaction(
@@ -1114,6 +1121,12 @@ def collect(
                 result = replace(
                     result,
                     detail=f"{result.detail.rstrip('.')} after a safe Tier-1 reconciliation",
+                    heal=Heal(tier=1, action="; ".join(check_actions) + ".", applied=True),
+                )
+            if definition.id == "config.claude_composition" and check_actions:
+                result = replace(
+                    result,
+                    detail=f"{result.detail.rstrip('.')} after a safe refresh",
                     heal=Heal(tier=1, action="; ".join(check_actions) + ".", applied=True),
                 )
             results[definition.id] = result
@@ -4755,6 +4768,24 @@ def _probe_meeting_sources(context: DoctorContext) -> ProbeResult:
     return ProbeResult("OK", f"Meeting-notes folder '{folder}' exists and contains notes")
 
 
+def _heal_claude_composition(context: DoctorContext) -> str | None:
+    """Write CLAUDE.md when its bytes have drifted from the custom block.
+
+    The everyday hook is mtime-gated, so a stale CLAUDE.md written after the
+    custom file will not be repaired by "send any message". This force path
+    compares bytes and writes when they differ.
+    """
+    from core.utils.claude_composition import CUSTOM, recompose_if_needed
+
+    custom_path = context.vault_root / CUSTOM
+    if custom_path.is_symlink() or not custom_path.is_file():
+        return None
+    result = recompose_if_needed(context.vault_root, force=True)
+    if result == "recomposed":
+        return "refreshed CLAUDE.md so your customisations are live"
+    return None
+
+
 def _probe_claude_composition(context: DoctorContext) -> ProbeResult:
     """Check that CLAUDE.md actually carries the user's current custom block.
 
@@ -4814,15 +4845,7 @@ def _probe_claude_composition(context: DoctorContext) -> ProbeResult:
         "BROKEN",
         f"{CLAUDE} does not match {CUSTOM}, so some of your personal instructions are "
         "not being loaded. The refresh that should keep these in step has not run",
-        Heal(
-            tier=2,
-            action=(
-                "Send any message to trigger the refresh hook, or run "
-                "python3 -c 'from pathlib import Path; from core.utils.claude_composition "
-                "import recompose_if_needed; print(recompose_if_needed(Path(\".\")))'"
-            ),
-            applied=False,
-        ),
+        Heal(tier=2, action="Send any message.", applied=False),
     )
 
 
