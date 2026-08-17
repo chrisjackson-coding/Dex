@@ -4845,7 +4845,11 @@ def _probe_claude_composition(context: DoctorContext) -> ProbeResult:
         "BROKEN",
         f"{CLAUDE} does not match {CUSTOM}, so some of your personal instructions are "
         "not being loaded. The refresh that should keep these in step has not run",
-        Heal(tier=2, action="Send any message.", applied=False),
+        # Not "send any message": the everyday refresh is mtime-gated, and in
+        # this exact case CLAUDE.md is the newer file, so that route no-ops and
+        # the user is left following advice that cannot work. Name the one that
+        # forces on bytes.
+        Heal(tier=2, action="Run /dex-doctor to put your customisations back in force.", applied=False),
     )
 
 

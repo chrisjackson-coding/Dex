@@ -19,6 +19,13 @@
 #     no worse off than before this hook existed, and /dex-doctor reports it.
 #   - Never a partial write: the Python side composes to a temp file and
 #     renames, so a half-written instruction file is impossible.
+#   - Never a competing write: the Python side takes the vault mutation lock
+#     before composing, and gives up quietly if another Dex process holds it.
+#     An update composes CLAUDE.md itself, so nothing is lost by waiting, and
+#     racing it would overwrite the new file using the old release template.
+#   - This path is mtime-gated, so it cannot repair a CLAUDE.md that is newer
+#     than the custom block and still wrong. That case is Doctor's, which
+#     forces on bytes. Do not point a user here to fix drift.
 
 {
     CLAUDE_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"

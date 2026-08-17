@@ -186,8 +186,34 @@ def test_probe_reports_broken_when_claude_has_drifted(tmp_path):
     assert result.verdict == "BROKEN"
     assert "not being loaded" in result.detail
     assert result.heal is not None and not result.heal.applied
-    assert result.heal.action == "Send any message."
     assert "python" not in result.heal.action.lower()
+
+
+def test_the_tier2_advice_names_a_route_that_actually_repairs(tmp_path):
+    """Doctor's printed advice must lead to a repair, not merely sound like one.
+
+    "Send any message" was wrong for this case. The everyday refresh is
+    mtime-gated and here CLAUDE.md is the newer file, so following that advice
+    leaves the drift in place and the next checkup reports BROKEN again. That is
+    the same silent-success shape as the original bug, moved into the remedy.
+
+    Asserting the wording alone cannot catch this, which is how it survived. So
+    this walks both routes and checks which one actually ends in OK.
+    """
+    root = _vault(tmp_path)
+    (root / "CLAUDE.md").write_bytes(b"stale, missing the custom block\n")
+    context = _context(root)
+
+    advice = doctor._probe_claude_composition(context).heal.action
+
+    # The route the advice used to name does nothing in this case.
+    assert recompose_if_needed(root) == "current"
+    assert doctor._probe_claude_composition(context).verdict == "BROKEN"
+
+    # The route it names now repairs, and the advice has to point at it.
+    assert "/dex-doctor" in advice
+    doctor._apply_t1_heals(context)
+    assert doctor._probe_claude_composition(context).verdict == "OK"
 
 
 def test_mtime_gate_does_not_repair_stale_claude_written_after_custom(tmp_path):
