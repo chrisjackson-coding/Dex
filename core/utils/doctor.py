@@ -652,6 +652,7 @@ DEEP_CHECKS = (
     CheckDefinition("granola.query_path", "Granola meeting sync", "_probe_granola_query_path"),
     CheckDefinition("pipedrive.connection", "Pipedrive CRM", "_probe_pipedrive_connection"),
     CheckDefinition("config.meeting_sources", "Configured meeting source", "_probe_meeting_sources"),
+    CheckDefinition("config.claude_composition", "CLAUDE customisations live", "_probe_claude_composition"),
     CheckDefinition("update.post-canary", "Post-update canary", "_probe_post_update_canary"),
     CheckDefinition("calendar.access", "Calendar access", "_probe_calendar_access"),
     CheckDefinition("mail.apple-search", "Apple Mail search", "_probe_apple_mail_search"),
@@ -4752,6 +4753,77 @@ def _probe_meeting_sources(context: DoctorContext) -> ProbeResult:
             "— if your meeting tool should already be exporting, check that export",
         )
     return ProbeResult("OK", f"Meeting-notes folder '{folder}' exists and contains notes")
+
+
+def _probe_claude_composition(context: DoctorContext) -> ProbeResult:
+    """Check that CLAUDE.md actually carries the user's current custom block.
+
+    This is not the fix; the UserPromptSubmit refresh hook is. This probe is the
+    detector for that hook having failed, which is why a drift finding says the
+    refresh did not run rather than merely that the block is out of date.
+
+    The test is byte-for-byte against a fresh composition, not a timestamp
+    comparison. mtime false-positives on a touch and misses content-only
+    changes after a restore, and there is no window in which staleness is
+    acceptable: an instruction written five minutes ago is exactly as inert as
+    one written five weeks ago.
+    """
+    from core.utils.claude_composition import (
+        CLAUDE,
+        CUSTOM,
+        RecomposeUnavailable,
+        compose_current,
+    )
+    from core.update.apply_update import CompositionError
+
+    custom_path = context.vault_root / CUSTOM
+    if not custom_path.is_file():
+        return ProbeResult("OFF", "No personal customisations to keep in step", feature_status="off")
+
+    claude_path = context.vault_root / CLAUDE
+    if not claude_path.is_file():
+        return ProbeResult(
+            "BROKEN",
+            f"{CUSTOM} exists but {CLAUDE} does not, so none of your customisations are loaded",
+            Heal(tier=2, action="Run /dex-update to compose CLAUDE.md.", applied=False),
+        )
+
+    try:
+        expected = compose_current(context.vault_root)
+    except RecomposeUnavailable as error:
+        return ProbeResult(
+            "UNKNOWN",
+            f"Could not check whether your customisations are live ({_one_line(error)})",
+        )
+    except CompositionError as error:
+        return ProbeResult(
+            "BROKEN",
+            f"Your customisations cannot be composed ({_one_line(error)}), so they are not loaded",
+            Heal(tier=2, action=f"Check the USER_EXTENSIONS markers in the release template.", applied=False),
+        )
+
+    try:
+        live = claude_path.read_bytes()
+    except OSError as error:
+        return ProbeResult("UNKNOWN", f"{CLAUDE} could not be read ({_one_line(error)})")
+
+    if live == expected:
+        return ProbeResult("OK", "Your CLAUDE.md customisations are live")
+
+    return ProbeResult(
+        "BROKEN",
+        f"{CLAUDE} does not match {CUSTOM}, so some of your personal instructions are "
+        "not being loaded. The refresh that should keep these in step has not run",
+        Heal(
+            tier=2,
+            action=(
+                "Send any message to trigger the refresh hook, or run "
+                "python3 -c 'from pathlib import Path; from core.utils.claude_composition "
+                "import recompose_if_needed; print(recompose_if_needed(Path(\".\")))'"
+            ),
+            applied=False,
+        ),
+    )
 
 
 def _probe_post_update_canary(context: DoctorContext) -> ProbeResult:
