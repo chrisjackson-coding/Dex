@@ -111,7 +111,25 @@ events cannot identify the meeting safely.
 
 ## Process
 
-### Step 0: Gather Context (if needed)
+### Step 0: Refresh the meeting record
+
+Before reading anything, ensure recent meetings are in the vault by running
+`/process-meetings`. This pulls anything unprocessed from the meeting source, creates the
+notes, and updates person and company pages, so the brief is built on the latest capture
+rather than on whatever happened to be filed already.
+
+- If no new meetings are found, continue silently
+- If meetings are processed, use the extracted context in the brief below
+- Do NOT ask for a skill rating after this sub-step, save that for the end of the prep
+
+**Why this skill in particular needs it.** `/meeting-prep` is normally run minutes before a
+call, which is exactly when the most recent conversation with these attendees is most likely
+to be sitting unprocessed. Step 3 below reads `00-Inbox/Meetings/`, and a brief built from a
+stale folder does not look incomplete: it looks like there was nothing to report. Missing
+context and no context are indistinguishable in the output, which is why the refresh belongs
+before the read rather than being left to chance.
+
+### Step 0.5: Gather Context (if needed)
 
 **If $MEETING or $ATTENDEES are not provided, try the calendar before asking.** The user booked
 the meeting; the invite already holds the title and the attendee list, and asking them to retype
@@ -228,7 +246,9 @@ Extract:
 
 ### Step 3: Recent Context
 
-Search `00-Inbox/Meetings/` for recent meetings with these attendees:
+Search `00-Inbox/Meetings/` for recent meetings with these attendees. Step 0 refreshed this
+folder; without that, anything captured since the last processing run is invisible here.
+
 - What was discussed?
 - What was decided?
 - What follow-ups were committed?
