@@ -669,8 +669,9 @@ def test_briefing_skills_refresh_the_meeting_record_before_reading_it(skill: str
 
     refresh_at = body.find("/process-meetings")
     assert refresh_at != -1, (
-        f"{skill} reads the meeting record but never refreshes it. Anything captured since "
-        "the last processing run is invisible, and the brief looks complete rather than stale."
+        f"{skill} reads the meeting record but never processes it first. Anything captured "
+        "locally since the last processing run is invisible, and the brief looks complete "
+        "rather than stale."
     )
     assert refresh_at < read_at, (
         f"{skill} refreshes the meeting record only after reading it, which is too late to "
