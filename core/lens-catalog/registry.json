@@ -5749,8 +5749,8 @@
       "source": {
         "kind": "active-skill",
         "path": ".claude/skills/journal/SKILL.md",
-        "sha256": "f13515651d51dd05b9be7063a7815e7ab648f125fa61723120275186d4b81c34",
-        "byte_size": 6495
+        "sha256": "664c1c0a1c38964a97bd1f9664fe011cf007f6eec04395244cee667f38f443f6",
+        "byte_size": 7154
       },
       "value": "Toggle journaling or start a morning/evening/weekly journal entry.",
       "jobs_served": [
