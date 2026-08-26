@@ -181,6 +181,15 @@ def test_the_worker_widens_path_for_node_when_the_environment_hides_it(tmp_path:
     node.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
     node.chmod(0o755)
 
+    # PATH must hide node for the fallback to be exercised at all, and
+    # "/usr/bin:/bin" does not hide it everywhere: some hosts ship
+    # /usr/bin/node, where the guard resolves node immediately and this test
+    # silently asserts nothing. An empty directory hides it on every host.
+    # The block below uses only bash builtins, and bash is invoked by absolute
+    # path, so an otherwise-unusable PATH costs it nothing.
+    empty = tmp_path / "empty-path"
+    empty.mkdir()
+
     # Reproduce the worker's discovery block against a PATH with no node on it,
     # pointing it at the fake prefix instead of the real one.
     lines = WORKER.read_text(encoding="utf-8").splitlines()
@@ -190,7 +199,7 @@ def test_the_worker_widens_path_for_node_when_the_environment_hides_it(tmp_path:
     block = "\n".join(lines[start:end + 1]).replace("/opt/homebrew/bin", str(fake_prefix))
 
     result = subprocess.run(
-        ["/bin/bash", "-c", f'PATH="/usr/bin:/bin"\n{block}\ncommand -v node'],
+        ["/bin/bash", "-c", f'PATH="{empty}"\n{block}\ncommand -v node'],
         capture_output=True,
         text=True,
         check=False,
