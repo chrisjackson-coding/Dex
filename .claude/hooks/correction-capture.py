@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 MAX_CHARS = 600
-HEADING = "## {time} - Correction from Chris"
+HEADING = "## {time} - Correction from the user"
 
 
 def _vault_root() -> Path:
