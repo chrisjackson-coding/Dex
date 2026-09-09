@@ -32,7 +32,7 @@ def _event(offset_seconds=0, *, title="Commercial Review", attendees=None):
         "start": (START + timedelta(seconds=offset_seconds)).isoformat(),
         "title": title,
         "attendees": attendees if attendees is not None else [
-            {"name": "Ada Reeve", "email": "fixture-ken@invalid.test"},
+            {"name": "Ada Reeve", "email": "fixture-owner@invalid.test"},
             {"name": "Bea Nolan", "email": "fixture-emily@invalid.test"},
         ],
     }
@@ -43,7 +43,7 @@ def test_a_matching_event_resolves_attendance_and_the_real_title():
 
     assert resolved.attribution_is_reliable is True
     assert {person.email for person in resolved.attendees} == {
-        "fixture-ken@invalid.test",
+        "fixture-owner@invalid.test",
         "fixture-emily@invalid.test",
     }
     assert resolved.title == "Commercial Review"
@@ -107,7 +107,7 @@ def test_the_note_reports_resolved_attendance_and_drops_the_warning(tmp_path):
 
     assert "attribution_resolved: true" in text
     assert "Attendance unresolved" not in text
-    assert "fixture-ken@invalid.test" in text
+    assert "fixture-owner@invalid.test" in text
 
 
 def test_the_note_keeps_the_warning_when_the_calendar_could_not_confirm(tmp_path):

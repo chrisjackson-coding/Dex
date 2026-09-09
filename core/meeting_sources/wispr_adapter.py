@@ -29,7 +29,7 @@ SOURCE = "wispr"
 _NEXT_STEPS = re.compile(r"^#{1,6}\s*next steps\s*$", re.IGNORECASE)
 _HEADING = re.compile(r"^#{1,6}\s+")
 _BULLET = re.compile(r"^\s*[-*]\s+(?P<text>.+?)\s*$")
-# "- (Ken) Add Pipedrive deal id..." — the parenthesised owner is a speaker
+# "- (Speaker 1) Send the revised figures": the parenthesised owner is a speaker
 # label, which for this source may be "Speaker 1" and is not a resolved person.
 _LEADING_OWNER = re.compile(r"^\((?P<owner>[^)]{1,40})\)\s*(?P<rest>.+)$")
 

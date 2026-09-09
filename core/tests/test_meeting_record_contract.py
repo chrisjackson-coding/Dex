@@ -27,7 +27,7 @@ GRANOLA_DETAIL = {
     ),
     "attendees": [
         {"name": "Cara Vance", "email": "fixture-sarah@invalid.test"},
-        {"email": "fixture-ken@invalid.test"},
+        {"email": "fixture-owner@invalid.test"},
     ],
     "transcript": [{"text": "hello"}, {"text": "goodbye"}],
 }
@@ -114,7 +114,7 @@ def test_granola_attendees_reach_the_note_for_person_routing(tmp_path):
     text = landing_zone.write(tmp_path, granola_adapter.to_record(GRANOLA_DETAIL)).read_text()
 
     assert "fixture-sarah@invalid.test" in text
-    assert "fixture-ken@invalid.test" in text
+    assert "fixture-owner@invalid.test" in text
 
 
 def test_dedup_is_per_source_so_two_providers_never_collide(tmp_path):
