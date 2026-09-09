@@ -73,7 +73,7 @@ def test_no_attendees_means_attribution_is_not_reliable():
     """This source names speakers it cannot identify. Say so, do not resolve it."""
     assert wispr_adapter.to_record(_payload()).attribution_is_reliable is False
     assert wispr_adapter.to_record(
-        _payload(attendees=[{"name": "Ken", "email": "ken@example.com"}])
+        _payload(attendees=[{"name": "Ada Reeve", "email": "owner@example.com"}])
     ).attribution_is_reliable is True
 
 
@@ -103,7 +103,7 @@ def test_an_unresolved_capture_warns_against_attributing_it(tmp_path):
 
 
 def test_a_resolved_capture_carries_no_warning(tmp_path):
-    record = wispr_adapter.to_record(_payload(attendees=[{"email": "ken@example.com"}]))
+    record = wispr_adapter.to_record(_payload(attendees=[{"email": "owner@example.com"}]))
     text = landing_zone.write(tmp_path, record).read_text()
 
     assert "Attendance unresolved" not in text
@@ -243,7 +243,7 @@ def test_a_matched_capture_is_written_with_its_real_attendees(tmp_path, monkeypa
         {
             "start": "2026-08-14T12:57:49.639000Z",
             "title": "Weekly commercial review",
-            "attendees": [{"name": "Ada Reeve", "email": "fixture-ken@invalid.test"}],
+            "attendees": [{"name": "Ada Reeve", "email": "fixture-owner@invalid.test"}],
         }
     ]
 
@@ -251,7 +251,7 @@ def test_a_matched_capture_is_written_with_its_real_attendees(tmp_path, monkeypa
 
     assert result.written == 1 and result.attributed == 1
     text = result.paths[0].read_text()
-    assert "fixture-ken@invalid.test" in text
+    assert "fixture-owner@invalid.test" in text
     assert "Attendance unresolved" not in text
 
 
