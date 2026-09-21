@@ -525,10 +525,22 @@ def generate_task_id() -> str:
     """
     date_str = _tz_now().strftime('%Y%m%d')
 
-    # Only scan folders that contain real task references (not docs/examples)
+    # Only scan folders that contain real task references (not docs/examples).
+    #
+    # 07-Archives is in this list because the counter is max+1 over what it can
+    # see, so anything it cannot see is reusable. Completed tasks are cleared
+    # out of 03-Tasks/Tasks.md during the weekly review and survive only in
+    # 07-Archives/Tasks/Completed_*.md, and every archived daily plan and
+    # review carries task anchors too. Omitting the folder meant the highest ID
+    # could leave the scanned set and be handed out a second time, producing two
+    # different tasks that share one anchor: completion sync then updates
+    # whichever it finds first, and neither can be repaired by ID.
+    #
+    # Cost measured on a vault with 929 markdown files: no slower than the
+    # six-folder scan, because the work is dominated by file reads either way.
     task_folders = [
         '00-Inbox', '01-Quarter_Goals', '02-Week_Priorities',
-        '03-Tasks', '04-Projects', '05-Areas',
+        '03-Tasks', '04-Projects', '05-Areas', '07-Archives',
     ]
 
     existing_ids = []
