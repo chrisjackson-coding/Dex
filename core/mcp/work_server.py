@@ -1439,6 +1439,44 @@ def _person_resolution_how(query: str, person: Dict[str, Any]) -> str:
     return 'fuzzy'
 
 
+# A fuzzy person match is the only resolution step with no exact evidence behind
+# it, and it is the one that can write to the wrong person's page. Reported:
+# create_task with people=["Jake Walpole"] resolved to Mark Wallace at 0.67 and
+# wrote a Related Tasks row onto his page. Nothing errored, and person pages
+# feed meeting prep and context injection, so the wrong link spreads.
+#
+# Two conditions, because a bare score threshold is tuned to whichever sample
+# produced it. Measured on a real vault, genuine near-misses (a dictation typo,
+# a dropped trailing letter) score 0.80 to 1.00 and the bad match scored 0.67.
+# What actually separates them is the given name: every genuine match agreed on
+# the first token, and "Jake" against "Mark" agrees on nothing.
+#
+# Refusing is the safe direction. A task that is not created is visible
+# immediately; a task attached to the wrong person is not.
+FUZZY_PERSON_MIN_SCORE = 0.75
+FUZZY_PERSON_MIN_FIRST_TOKEN = 0.6
+
+
+def _fuzzy_person_match_is_safe(query: str, person: Dict[str, Any]) -> bool:
+    """Whether a fuzzy person resolution is strong enough to write to a page."""
+    try:
+        score = float(person.get('_score') or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if score < FUZZY_PERSON_MIN_SCORE:
+        return False
+
+    query_tokens = query.strip().casefold().split()
+    name_tokens = (person.get('name') or '').casefold().split()
+    if len(query_tokens) < 2 or len(name_tokens) < 2:
+        return True
+
+    first_token_ratio = SequenceMatcher(
+        None, query_tokens[0], name_tokens[0]
+    ).ratio()
+    return first_token_ratio >= FUZZY_PERSON_MIN_FIRST_TOKEN
+
+
 def resolve_people_links(people: List[str]) -> Dict[str, Any]:
     """Resolve person paths or names before a task is written."""
     resolved_people = []
@@ -1497,12 +1535,24 @@ def resolve_people_links(people: List[str]) -> Dict[str, Any]:
             }
 
         person = matches[0]
+        how = _person_resolution_how(given, person)
+        if how == 'fuzzy' and not _fuzzy_person_match_is_safe(given, person):
+            return {
+                'success': False,
+                'error': (
+                    f'No confident person match for: {given}. The closest page '
+                    f"is {person.get('name') or person['path']}, which is not "
+                    'close enough to write to. Pass the page path explicitly if '
+                    'that is the right person, or create the page first.'
+                ),
+                'candidates': candidate_paths,
+            }
         resolved_path = person['path']
         resolved_people.append(resolved_path)
         links.append({
             'given': given,
             'resolved_path': resolved_path,
-            'how': _person_resolution_how(given, person),
+            'how': how,
         })
 
     return {
