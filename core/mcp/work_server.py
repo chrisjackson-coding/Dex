@@ -151,6 +151,8 @@ from core.entity_engine import reroute as entity_reroute
 from core.gates.safety import evaluate_safety_gate
 from core.meeting_capture_match import match_capture_to_calendar
 from core.paths import (
+    ARCHIVES_DIR,
+    AREAS_DIR,
     COMPANIES_DIR,
     COMPANY_INDEX_FILE,
     GOALS_FILE,
@@ -538,9 +540,17 @@ def generate_task_id() -> str:
     #
     # Cost measured on a vault with 929 markdown files: no slower than the
     # six-folder scan, because the work is dominated by file reads either way.
+    # Folder names come from the path contract rather than literals, but the
+    # scan stays relative to BASE_DIR so a test can point the whole vault at a
+    # temporary directory.
     task_folders = [
-        '00-Inbox', '01-Quarter_Goals', '02-Week_Priorities',
-        '03-Tasks', '04-Projects', '05-Areas', '07-Archives',
+        INBOX_DIR.name,
+        QUARTER_GOALS_FILE.parent.name,
+        WEEK_PRIORITIES_FILE.parent.name,
+        TASKS_FILE.parent.name,
+        PROJECTS_DIR.name,
+        AREAS_DIR.name,
+        ARCHIVES_DIR.name,
     ]
 
     existing_ids = []
