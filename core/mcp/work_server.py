@@ -65,6 +65,25 @@ except ImportError:
     def _fire_analytics_event(event_name, properties=None):
         return _analytics_helper_unavailable_result()
 
+# Goal anchors are written as ^<quarter>-goal-<n>, and two quarter shapes are in
+# real use. Dex generates the calendar form (Q3-2026-goal-1) from the quarter
+# label, but a vault whose quarters are fiscal writes the fiscal form
+# (FY27-Q2-goal-1), and this module already knows fiscal quarters exist: see
+# _fiscal_quarter_window() and the fiscal_year_start setting behind it.
+#
+# Matching only the calendar form does not fail loudly. The heading parser
+# yields goal_id None, so every goal reports activity_known False, linked
+# priorities and open task counts come back null, task-to-goal links go unread,
+# and get_weekly_planning_context recommends adding IDs that are already on the
+# line. Reported from a vault whose three goals all carried valid
+# ^FY27-Q2-goal-N anchors and whose goal tracking had been silently dead.
+#
+# Deliberately narrow: two known shapes, not "anything before -goal-". A loose
+# pattern would swallow a typo and make a broken anchor look linked, which is
+# the same silent failure wearing different clothes.
+GOAL_ID_QUARTER_PATTERN = r'(?:Q\d+-\d{4}|FY\d{2,4}-Q\d+)'
+GOAL_ID_PATTERN = GOAL_ID_QUARTER_PATTERN + r'-goal-\d+'
+
 # Set up logging first (before any imports that might use it)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -633,7 +652,7 @@ def _parse_task_metadata(child_lines: List[str], title: str) -> Dict[str, Any]:
     goal = None
     goal_tentative = False
     goal_match = re.fullmatch(
-        r'(Q\d+-\d{4}-goal-\d+)(\s+\(\?\))?',
+        r'(' + GOAL_ID_PATTERN + r')(\s+\(\?\))?',
         fields.get('goal', ''),
     )
     if goal_match:
@@ -2334,7 +2353,7 @@ def generate_goal_id(quarter: str, existing_goals: List[Dict]) -> str:
 
 def extract_goal_id(text: str) -> Optional[str]:
     """Extract goal ID from text like ^Q1-2026-goal-1"""
-    match = re.search(r'\^(Q\d+-\d{4}-goal-\d+)', text)
+    match = re.search(r'\^(' + GOAL_ID_PATTERN + r')', text)
     return match.group(1) if match else None
 
 def _fiscal_quarter_window(day: date, q1_start_month: int) -> tuple:
@@ -2446,7 +2465,10 @@ def parse_quarterly_goals(filepath: Path) -> List[Dict[str, Any]]:
         line = lines[i]
         
         # Match goal headers like ### 1. Launch Product v2.0 — **Growth** ^Q1-2026-goal-1
-        goal_match = re.match(r'###\s+(\d+)\.\s+(.+?)\s+—\s+\*\*(.+?)\*\*(?:\s+\^(Q\d+-\d{4}-goal-\d+))?', line)
+        goal_match = re.match(
+            r'###\s+(\d+)\.\s+(.+?)\s+—\s+\*\*(.+?)\*\*(?:\s+\^(' + GOAL_ID_PATTERN + r'))?',
+            line,
+        )
         if goal_match:
             goal_num = int(goal_match.group(1))
             title = goal_match.group(2).strip()
@@ -2877,7 +2899,7 @@ def parse_weekly_priorities(filepath: Path) -> List[Dict[str, Any]]:
                     break
                 if 'Quarterly goal:' not in metadata_line:
                     continue
-                goal_match = re.search(r'\[(Q\d+-\d{4}-goal-\d+)\]', metadata_line)
+                goal_match = re.search(r'\[(' + GOAL_ID_PATTERN + r')\]', metadata_line)
                 if goal_match:
                     linked_goal_id = goal_match.group(1)
                 break
@@ -3326,7 +3348,7 @@ def migrate_quarterly_goals() -> Dict[str, Any]:
     # and overwriting a user's anchor destroys something that may be
     # load-bearing elsewhere in their vault.
     heading_re = re.compile(r'(###\s+\d+\.\s+(.+?)\s+—\s+\*\*.*?\*\*)(.*)$')
-    canonical_re = re.compile(r'\^Q\d+-\d{4}-goal-\d+')
+    canonical_re = re.compile(r'\^' + GOAL_ID_PATTERN)
     any_anchor_re = re.compile(r'\^\S+')
 
     for i, line in enumerate(lines):
@@ -3339,7 +3361,7 @@ def migrate_quarterly_goals() -> Dict[str, Any]:
         if canonical_re.search(line):
             # Already has a goal ID. If it is not straight after the pillar the
             # parser cannot read it, so name it rather than adding a second.
-            if not re.match(r'\s+\^Q\d+-\d{4}-goal-\d+', trailing):
+            if not re.match(r'\s+\^' + GOAL_ID_PATTERN, trailing):
                 headings_needing_manual_fix.append({
                     'line_number': i + 1,
                     'title': title,
