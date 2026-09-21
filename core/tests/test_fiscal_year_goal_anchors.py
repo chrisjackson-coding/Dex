@@ -20,7 +20,6 @@ import pytest
 
 from core.mcp import work_server
 
-
 CALENDAR = "Q3-2026-goal-1"
 FISCAL = "FY27-Q2-goal-1"
 
@@ -64,3 +63,40 @@ def test_quarterly_goal_heading_yields_its_id(
     assert len(parsed) == 1
     assert parsed[0]["goal_id"] == goal_id
     assert parsed[0]["pillar"] == "deliver"
+
+
+@pytest.mark.parametrize("goal_id", [CALENDAR, FISCAL])
+def test_career_evidence_scan_reads_the_same_two_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, goal_id: str
+) -> None:
+    """career_server carries its own copy of the goal-heading regex.
+
+    Left calendar-only it would drop the goal ID while work_server kept it, so
+    the same goal would be linked in one server and anonymous in the other.
+    The goal below is written so it survives the handler's own filters
+    (complete, and high impact), which is what makes the ID observable.
+    """
+    import asyncio
+    import json
+
+    from core.mcp import career_server
+
+    goals_dir = tmp_path / "01-Quarter_Goals"
+    goals_dir.mkdir(parents=True)
+    (goals_dir / "Quarter_Goals.md").write_text(
+        f"### 1. Revenue Converts — **deliver** ^{goal_id}\n"
+        "**Progress:** 100%\n"
+        "**Impact level:** high\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(career_server, "BASE_DIR", tmp_path)
+
+    result = asyncio.run(
+        career_server.handle_scan_work_for_evidence(
+            {"include_goals": True, "include_priorities": False}
+        )
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["candidates_found"] == 1
+    assert payload["evidence_candidates"][0]["goal_id"] == goal_id
