@@ -31,7 +31,7 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -244,10 +244,65 @@ def _resolve_vault_path() -> str:
     return str(cwd)
 
 
+def _as_glob_list(glob_pattern: str | list[str] | tuple[str, ...]) -> list[str]:
+    """Accept one glob or several; empty input keeps the all-markdown default."""
+    if isinstance(glob_pattern, (list, tuple)):
+        globs = [str(item).strip() for item in glob_pattern if str(item).strip()]
+        return globs or ["**/*.md"]
+    text = str(glob_pattern or "").strip()
+    return [text] if text else ["**/*.md"]
+
+
+def _starstar_match(posix: str, pattern: str) -> bool:
+    """Match a vault-relative path where ``**`` means zero or more folders."""
+    regex_parts = ["^"]
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            if index + 2 < len(pattern) and pattern[index + 2] == "/":
+                regex_parts.append("(?:.*/)?")
+                index += 3
+            else:
+                regex_parts.append(".*")
+                index += 2
+            continue
+        char = pattern[index]
+        if char == "*":
+            regex_parts.append("[^/]*")
+        elif char == "?":
+            regex_parts.append("[^/]")
+        else:
+            regex_parts.append(re.escape(char))
+        index += 1
+    regex_parts.append("$")
+    return re.fullmatch("".join(regex_parts), posix) is not None
+
+
+def _path_matches_glob(posix: str, glob_item: str) -> bool:
+    pattern = glob_item.replace("\\", "/")
+    full_match = getattr(PurePosixPath(posix), "full_match", None)
+    if callable(full_match):
+        try:
+            return bool(full_match(pattern))
+        except ValueError:
+            pass
+    return _starstar_match(posix, pattern)
+
+
+def _path_matches_any_glob(filepath: str, vault_path: str, globs: list[str]) -> bool:
+    """Keep grep-without-rg results inside the requested globs."""
+    try:
+        relative = Path(filepath).resolve().relative_to(Path(vault_path).resolve())
+    except ValueError:
+        relative = Path(filepath)
+    posix = relative.as_posix()
+    return any(_path_matches_glob(posix, glob_item) for glob_item in globs)
+
+
 def _grep_fallback(
     query: str,
     vault_path: str,
-    glob_pattern: str = "**/*.md",
+    glob_pattern: str | list[str] | tuple[str, ...] = "**/*.md",
     grep_pattern: Optional[str] = None,
     limit: int = 10,
 ) -> list[dict]:
@@ -264,33 +319,45 @@ def _grep_fallback(
     if not grep_pattern:
         return []
 
+    globs = _as_glob_list(glob_pattern)
+
     try:
         rg = shutil.which("rg")
-
-        if rg:
-            cmd = [
-                rg, "-i", "-l",
-                "--glob", glob_pattern,
-                "-m", "1",
-                grep_pattern,
-                vault_path,
-            ]
-        else:
-            cmd = [
-                "grep", "-r", "-i", "-l",
-                "--include=*.md",
-                "-E", grep_pattern,
-                vault_path,
-            ]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
-        files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+        files: list[str] = []
+        seen: set[str] = set()
+        # One original rg/grep invocation per glob. Several --glob flags are
+        # OR-ed, but matching is relative to the process cwd, so PARA trees at
+        # different depths miss when passed together against an absolute vault.
+        for glob_item in globs:
+            if rg:
+                cmd = [
+                    rg, "-i", "-l",
+                    "--glob", glob_item,
+                    "-m", "1",
+                    grep_pattern,
+                    vault_path,
+                ]
+            else:
+                cmd = [
+                    "grep", "-r", "-i", "-l",
+                    "--include=*.md",
+                    "-E", grep_pattern,
+                    vault_path,
+                ]
+            result = subprocess.run(
+                cmd,
+                cwd=vault_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            for filepath in (f.strip() for f in result.stdout.strip().split("\n") if f.strip()):
+                if filepath in seen:
+                    continue
+                if not rg and not _path_matches_any_glob(filepath, vault_path, [glob_item]):
+                    continue
+                seen.add(filepath)
+                files.append(filepath)
 
         for i, filepath in enumerate(files[:limit]):
             snippet = _extract_snippet(filepath, grep_pattern)
@@ -339,7 +406,7 @@ def vault_search(
     limit: int = 10,
     min_score: float = 0.0,
     search_type: str = "query",
-    fallback_glob: str = "**/*.md",
+    fallback_glob: str | list[str] | tuple[str, ...] = "**/*.md",
     fallback_grep: Optional[str] = None,
 ) -> list[dict]:
     """
@@ -350,7 +417,7 @@ def vault_search(
         limit:          Maximum results to return
         min_score:      Minimum relevance score (0.0 to 1.0). Only applied to QMD results.
         search_type:    QMD mode — "query" (hybrid), "search" (keyword), "vsearch" (vector)
-        fallback_glob:  Glob pattern for grep fallback file matching
+        fallback_glob:  One glob, or several, for grep fallback file matching
         fallback_grep:  Explicit regex for grep fallback. Auto-generated from query if None.
 
     Returns:
