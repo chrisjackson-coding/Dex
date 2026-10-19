@@ -23,6 +23,12 @@ After Dex started shutting Google mail down when you close a tab, opening Dex ag
 
 * **Google mail starts with the session again.** Closing a tab still stops leftover copies. Opening Dex now gets an answer back, so Gmail, Calendar, and Docs work instead of sitting there.
 
+On the older Python that Homebrew still offers as 3.11, Dex's task, calendar, and planning helpers could fail as they started, so they showed as disconnected and those tools were unavailable. Thanks to Michelle for the report.
+
+**What this fixes for you:**
+
+* **Task, calendar, and planning helpers start on Python 3.11.** They load on every Python version Dex supports. Claude Code no longer shows them as closed just because that older Python is the one in use.
+
 ## [1.97.28] — Update notices survive a Python upgrade, setup status answers, and the after-sync people check runs again (2026-10-11)
 
 Three things could quietly stop working depending on what else was on your computer. Dex's background helpers used whichever Python came first on your computer instead of the one Dex installs for itself, so a system Python upgrade could switch off the check for new releases. Asking Dex whether setup was finished could fail for vaults set up by the newer installer. And after a Granola sync, the check that every person in your meetings has a page could stop before looking at anyone. Thanks to Olivier and Gijs for the reports.
