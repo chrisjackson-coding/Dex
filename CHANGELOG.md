@@ -29,6 +29,12 @@ On the older Python that Homebrew still offers as 3.11, Dex's task, calendar, an
 
 * **Task, calendar, and planning helpers start on Python 3.11.** They load on every Python version Dex supports. Claude Code no longer shows them as closed just because that older Python is the one in use.
 
+After the guided repair that proves Dex's own files against the official record, checkup could still refuse to finish when one of those files was a large shipped picture. The preview said every Dex file would be proved; after saving, checkup still called the picture unproved and would not give a yes-or-no. Thanks to Jim for the report.
+
+**What this fixes for you:**
+
+* **Checkup and the proof preview agree on large shipped files.** A picture Dex ships that is bigger than a million bytes is treated as Dex's own after the repair, so checkup can finish. Files you added or changed are still not read for this check.
+
 ## [1.97.28] — Update notices survive a Python upgrade, setup status answers, and the after-sync people check runs again (2026-10-11)
 
 Three things could quietly stop working depending on what else was on your computer. Dex's background helpers used whichever Python came first on your computer instead of the one Dex installs for itself, so a system Python upgrade could switch off the check for new releases. Asking Dex whether setup was finished could fail for vaults set up by the newer installer. And after a Granola sync, the check that every person in your meetings has a page could stop before looking at anyone. Thanks to Olivier and Gijs for the reports.
