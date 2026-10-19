@@ -17,6 +17,12 @@ Asking Dex to take an event off your calendar used to sit there for about two mi
 * **A slow delete does not call the calendar broken.** You get a clear message, and other calendar asks still work.
 * **If nothing matches, you get a clear answer.** Dex says it could not find that title on that day.
 
+After Dex started shutting Google mail down when you close a tab, opening Dex again could leave mail, calendar, and docs silent. Dex waited half a minute for a first reply that never came. Thanks to Olivier for the report.
+
+**What this fixes for you:**
+
+* **Google mail starts with the session again.** Closing a tab still stops leftover copies. Opening Dex now gets an answer back, so Gmail, Calendar, and Docs work instead of sitting there.
+
 ## [1.97.28] — Update notices survive a Python upgrade, setup status answers, and the after-sync people check runs again (2026-10-11)
 
 Three things could quietly stop working depending on what else was on your computer. Dex's background helpers used whichever Python came first on your computer instead of the one Dex installs for itself, so a system Python upgrade could switch off the check for new releases. Asking Dex whether setup was finished could fail for vaults set up by the newer installer. And after a Granola sync, the check that every person in your meetings has a page could stop before looking at anyone. Thanks to Olivier and Gijs for the reports.
