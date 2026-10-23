@@ -32,6 +32,15 @@ The nightly health check on a Mac could still stop with a configuration error af
 
 * **The nightly health check can finish on a Mac.** It now finds your Dex Python, creates the folders it writes to before it starts, and reports a real checkup result instead of a configuration error.
 
+On a Windows computer, closing a chat wrote the same correction into that
+day's lessons every time, so one note kept appearing again and again. DEX-252.
+
+**What this fixes for you:**
+
+* **The same correction is not added twice.** Closing a chat now notices a
+  lesson that is already in the day's file, even when Windows has written the
+  file its own way.
+
 ## [1.97.29] — Calendar deletes finish, Google mail starts again, helpers load on older Python, and checkup proves large pictures (2026-10-19)
 
 Asking Dex to take an event off your calendar used to sit there for about two minutes and then give up. It was reading every event on that calendar first, so a busy calendar made the request time out, Dex called the calendar broken, and the event stayed put. Thanks to Greg for the report.
