@@ -18,6 +18,14 @@ After first-time setup, the goal areas you chose could be saved in a shape quart
 * **Goals work right after setup.** The areas you name during first-time setup are saved in the shape goals already use, so your first quarterly goal can be created immediately.
 * **Existing setups are read without a redo.** If your focus-area file is still in the older shape, Dex reads it and you can create goals without running setup again.
 
+People pages written in Dex's earlier layout were skipped when meetings were processed (DEX-251). The meeting note landed, but that person's page never showed it, and nothing said so.
+
+**What this fixes for you:**
+
+* **Older people pages get the meeting.** Dex now reads the earlier people-page layout as well as the current one, so a meeting is added to the page you already have.
+* **If a page cannot be read, you see which one.** Dex names the page instead of quietly leaving it out.
+* **Readable older pages pick up the current layout** when a meeting is added, without changing the notes you wrote.
+
 ## [1.97.29] — Calendar deletes finish, Google mail starts again, helpers load on older Python, and checkup proves large pictures (2026-10-19)
 
 Asking Dex to take an event off your calendar used to sit there for about two minutes and then give up. It was reading every event on that calendar first, so a busy calendar made the request time out, Dex called the calendar broken, and the event stayed put. Thanks to Greg for the report.
