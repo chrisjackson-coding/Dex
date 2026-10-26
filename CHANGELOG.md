@@ -9,6 +9,13 @@ All notable changes to Dex will be documented in this file.
 
 ## Unreleased
 
+A filing helper kept making new folders at the top of Dex instead of using the Archives and Resources folders that were already there.
+
+**What this fixes for you:**
+
+* **New top-level folders are stopped.** If something tries to create a folder next to Inbox and Projects, Dex blocks it and points to the real Archives and Resources folders.
+* **Automations can ask where those folders are.** There is a lookup that returns the actual Archives and Resources paths, including when you have moved them.
+
 Inside VS Code, asking Dex to use Apple Reminders never brought up the Mac permission ask, so the feature looked broken or simply vanished.
 
 **What this fixes for you:**
