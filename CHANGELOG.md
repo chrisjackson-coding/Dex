@@ -9,6 +9,13 @@ All notable changes to Dex will be documented in this file.
 
 ## Unreleased
 
+Inside VS Code, asking Dex to use Apple Reminders never brought up the Mac permission ask, so the feature looked broken or simply vanished.
+
+**What this fixes for you:**
+
+* **Dex says when Reminders can't be switched on.** If you are in VS Code, Dex now tells you the Mac will not show the Reminders permission ask there, and that you can use the Claude app or Terminal for Reminders instead.
+* **Nothing is treated as a silent failure.** You get a clear line, not a confusing error or a quiet skip.
+
 After an update, a saved proof of Dex's own files could still name the old version. The health check then said that record could not be trusted, which sounded like something was broken.
 
 **What this fixes for you:**
