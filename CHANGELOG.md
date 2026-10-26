@@ -9,6 +9,13 @@ All notable changes to Dex will be documented in this file.
 
 ## Unreleased
 
+After an update, folders for skills you had already removed could come back empty. The checkup then treated those empty folders as broken skills.
+
+**What this fixes for you:**
+
+* **An update no longer leaves empty skill folders behind.** If the update created a folder and then had nothing to put in it, it takes that empty folder away again.
+* **Empty skill folders are not reported as broken.** The checkup ignores a skill folder that has no files in it, including one that only has empty subfolders. A folder that still has files, or a skill that is actually damaged, is still flagged.
+
 An ordinary note that happened to say "don't" or "no", a pasted log, or a question like "Is that not what we discussed?" was being written down as if you had told Dex it was wrong. Only a real correction in your own words is saved now.
 
 **What this fixes for you:**
