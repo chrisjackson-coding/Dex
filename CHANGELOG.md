@@ -9,6 +9,14 @@ All notable changes to Dex will be documented in this file.
 
 ## Unreleased
 
+An ordinary note that happened to say "don't" or "no", a pasted log, or a question like "Is that not what we discussed?" was being written down as if you had told Dex it was wrong. Only a real correction in your own words is saved now.
+
+**What this fixes for you:**
+
+* **Everyday messages stay ordinary.** Saying "I don't have that" or "no rush" is no longer filed as a lesson. A real correction such as "no, that's not what I asked" is still saved.
+* **A paste or a quote is not a correction.** Text you pasted or quoted is ignored. A correction you typed next to it is still saved.
+* **A plain question is not a correction.** "Is that not what we talked about?" stays a question.
+
 The daily plan's week progress treated every weekly priority as not started — even ones already underway, ones written without a pillar label, and ones already tied to a quarterly goal.
 
 **What this fixes for you:**
