@@ -9,6 +9,13 @@ All notable changes to Dex will be documented in this file.
 
 ## Unreleased
 
+Mail search could look fine when you opened Dex, then miss emails that arrived later. The Mail helper only refreshed its copy at start-up, so anything newer stayed invisible until you restarted.
+
+**What this fixes for you:**
+
+* **Mail search stays current while Dex is open.** New setup now turns on live updates, so new mail is searchable without restarting.
+* **If you set this up earlier, checkup names the one change.** `/dex-doctor` notices the older setup and tells you exactly what to change so the copy stops going stale.
+
 After an update, folders for skills you had already removed could come back empty. The checkup then treated those empty folders as broken skills.
 
 **What this fixes for you:**
