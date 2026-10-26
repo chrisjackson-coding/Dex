@@ -9,6 +9,13 @@ All notable changes to Dex will be documented in this file.
 
 ## Unreleased
 
+After an update, a saved proof of Dex's own files could still name the old version. The health check then said that record could not be trusted, which sounded like something was broken.
+
+**What this fixes for you:**
+
+* **Dex says the proof just needs refreshing.** After an update, if that record still names the previous version, the update check and the health check say so in plain words and give the one command to run. They no longer call it untrusted.
+* **Nothing refreshes itself.** Dex still waits for you to run that command. An update does not rewrite the proof on its own.
+
 People pages that said they were internal or external in the header — instead of saying they were a person — were skipped when meetings were processed. The meeting note landed, that person's page never showed it, and some older meeting links on those pages pointed at the wrong place.
 
 **What this fixes for you:**
