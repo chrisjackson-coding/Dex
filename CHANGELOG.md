@@ -17,6 +17,19 @@ Every correction was being saved under the same heading, so Dex treated unrelate
 * **Unrelated lessons stay separate.** Dex only groups notes that are really about the same thing. Sharing a heading is not enough.
 * **Older notes are cleaned up in the background.** Existing generic headings are renamed from their content, and notes that were wrongly piled together are split apart. Nothing is deleted, and you do not have to do anything.
 
+### Project pages now show the tasks that belong to them
+
+You could already see related work on a person page or a meeting note. A project page still sent you hunting through the main task list — or worse, looking at a task that merely mentioned the same word.
+
+**What this fixes for you:**
+
+* **Open work sits on the project page.** Near the top of each project you see the tasks that are actually linked to it, with open ones first.
+* **A few recently finished ones sit underneath.** Enough to see momentum, without turning the page into a graveyard of old ticks.
+* **Only a real link counts.** A task has to name that project on purpose. Sharing a word with the project name is not enough.
+* **You still tick the task in the main list.** The project page points at the real task. It does not make a second checkbox that can drift out of date.
+* **It keeps itself current.** Adding or finishing a linked task updates the page. Once a day, Dex also catches edits you made by hand.
+* **Existing vaults are asked once.** New installs have this on. If you already use Dex, you get one short question before any project page changes.
+
 When you started a session, Dex's list of urgent tasks was usually empty. It only noticed a task as urgent if the word "P0", "urgent", "today" or "overdue" sat in the task's own title, but Dex itself records priority and due dates on the line underneath, or files the task under the P0 heading.
 
 **What this fixes for you:**
