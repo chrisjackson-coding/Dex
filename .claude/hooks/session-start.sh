@@ -429,6 +429,15 @@ fi
             JOB_KEY="${JOB_MODE#json:}"
             JOB_TS=$(sed -n 's/.*"'"$JOB_KEY"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$JOB_LOG" | head -1)
             if [[ -z "$JOB_TS" ]]; then
+                # Older vault-backup receipts used timestamp + ok, with no
+                # last_success field. A successful record still counts.
+                # grep, not sed alternation: macOS /usr/bin/sed does not treat
+                # \| as OR, so a GNU-only pattern would miss every legacy stamp.
+                if grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_LOG"; then
+                    JOB_TS=$(sed -n 's/.*"timestamp"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$JOB_LOG" | head -1)
+                fi
+            fi
+            if [[ -z "$JOB_TS" ]]; then
                 echo "⏰ $JOB_LABEL is installed but has never completed a successful run — run /dex-doctor to investigate."
                 continue
             fi
@@ -469,6 +478,7 @@ com.dex.smoke-nightly|.scripts/logs/smoke-nightly.log|93600|26 hours|Nightly smo
 com.dex.meeting-intel|System/.dex/processed-meetings.json|172800|2 days|Meeting sync|json:lastSync
 com.dex.changelog-checker|.scripts/logs/changelog-checker.log|604800|7 days|Claude update watcher|mtime
 com.dex.learning-review|.scripts/logs/learning-review.log|604800|7 days|Learning review|mtime
+com.dex.vault-backup|System/.dex/backup-last-run.json|172800|2 days|Vault backup|json:last_success
 EOF
 } || true
 
