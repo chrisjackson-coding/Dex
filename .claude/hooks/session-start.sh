@@ -155,6 +155,14 @@ PY
         fi
     fi
 
+    # Retitle generic "Correction" headings and split notes that were piled
+    # together. Fail-open, background, no user action. The job is idempotent.
+    if [[ -f "$CLAUDE_DIR/core/utils/learning_title_backfill.py" && ${#DEX_PYTHON_CMD[@]} -gt 0 ]]; then
+        (cd "$CLAUDE_DIR" && VAULT_PATH="$CLAUDE_DIR" \
+            "${DEX_PYTHON_CMD[@]}" -m core.utils.learning_title_backfill \
+            --vault "$CLAUDE_DIR") >/dev/null 2>&1 &
+    fi
+
     # Wait briefly for checks to complete (but don't block session start)
     sleep 0.1
 fi
@@ -421,6 +429,15 @@ fi
             JOB_KEY="${JOB_MODE#json:}"
             JOB_TS=$(sed -n 's/.*"'"$JOB_KEY"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$JOB_LOG" | head -1)
             if [[ -z "$JOB_TS" ]]; then
+                # Older vault-backup receipts used timestamp + ok, with no
+                # last_success field. A successful record still counts.
+                # grep, not sed alternation: macOS /usr/bin/sed does not treat
+                # \| as OR, so a GNU-only pattern would miss every legacy stamp.
+                if grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_LOG"; then
+                    JOB_TS=$(sed -n 's/.*"timestamp"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$JOB_LOG" | head -1)
+                fi
+            fi
+            if [[ -z "$JOB_TS" ]]; then
                 echo "⏰ $JOB_LABEL is installed but has never completed a successful run — run /dex-doctor to investigate."
                 continue
             fi
@@ -461,6 +478,7 @@ com.dex.smoke-nightly|.scripts/logs/smoke-nightly.log|93600|26 hours|Nightly smo
 com.dex.meeting-intel|System/.dex/processed-meetings.json|172800|2 days|Meeting sync|json:lastSync
 com.dex.changelog-checker|.scripts/logs/changelog-checker.log|604800|7 days|Claude update watcher|mtime
 com.dex.learning-review|.scripts/logs/learning-review.log|604800|7 days|Learning review|mtime
+com.dex.vault-backup|System/.dex/backup-last-run.json|172800|2 days|Vault backup|json:last_success
 EOF
 } || true
 
@@ -473,6 +491,15 @@ if [[ -f "$CLAUDE_DIR/core/utils/health_session.py" && ${#DEX_PYTHON_CMD[@]} -gt
         cd "$CLAUDE_DIR" || exit 0
         "${DEX_PYTHON_CMD[@]}" -m core.utils.health_session --vault "$CLAUDE_DIR"
     ) 2>/dev/null || true
+fi
+
+# Once-a-day catch-up for project Related Tasks after hand edits.
+# Writes only when the user already has the list on (new installs start on).
+if [[ -f "$ONBOARDING_MARKER" && -f "$CLAUDE_DIR/core/project_related_tasks.py" && ${#DEX_PYTHON_CMD[@]} -gt 0 ]]; then
+    (
+        cd "$CLAUDE_DIR" || exit 0
+        "${DEX_PYTHON_CMD[@]}" -m core.project_related_tasks --daily-refresh --vault "$CLAUDE_DIR"
+    ) >/dev/null 2>&1 || true
 fi
 
 echo "=== End Session Context ==="

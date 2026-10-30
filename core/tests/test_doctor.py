@@ -71,6 +71,7 @@ QUICK_IDS = [
     "config.claude_direct_edits",
     "core.drift",
     "rituals.duration",
+    "backup.freshness",
     "doctor.self",
 ]
 
@@ -88,7 +89,6 @@ DEEP_IDS = [
     "integrations.enabled",
     "mcp.importable",
     "smoke.journeys",
-    "backup.freshness",
 ]
 
 
@@ -2924,6 +2924,7 @@ def test_jobs_loaded_degrades_to_unknown_off_macos(monkeypatch, context):
         ("com.dex.meeting-intel", timedelta(hours=48)),
         ("com.dex.changelog-checker", timedelta(days=7)),
         ("com.dex.learning-review", timedelta(days=7)),
+        ("com.dex.vault-backup", timedelta(days=2)),
     ],
 )
 def test_freshness_thresholds_are_strictly_greater_than_the_limit(label, expected_max_age, context):
@@ -3569,6 +3570,56 @@ def test_customization_skills_ignore_empty_retired_skill_directories(context):
 
     assert result.verdict == "OK"
     assert result.detail == "Validated 0 user customizations and 1 shipped skill"
+
+
+def test_customization_skills_ignore_empty_nested_folders_after_a_deleted_skill(context):
+    """DEX-258: an empty skill shell is not a broken skill, even with empty subfolders."""
+    _write_skill(context, "daily-plan")
+    leftover = context.vault_root / ".claude" / "skills" / "deleted-skill" / "references"
+    leftover.mkdir(parents=True)
+
+    result = doctor._probe_customization_skills(context)
+
+    assert result.verdict == "OK"
+    assert result.detail == "Validated 0 user customizations and 1 shipped skill"
+    assert "deleted-skill" not in result.detail
+
+
+def test_customization_skills_still_flag_a_nonempty_folder_without_skill_file(context):
+    _write_skill(context, "daily-plan")
+    leftover = context.vault_root / ".claude" / "skills" / "broken-skill"
+    leftover.mkdir(parents=True)
+    (leftover / "notes.md").write_text("left behind\n", encoding="utf-8")
+
+    result = doctor._probe_customization_skills(context)
+
+    relative = (leftover / "SKILL.md").relative_to(context.vault_root).as_posix()
+    assert result.verdict == "BROKEN"
+    assert relative in result.detail
+
+
+def test_capability_rooms_ignore_empty_disabled_skill_folders(context):
+    """DEX-258: an empty disabled-room skill folder is not a live broken skill."""
+    (context.vault_root / "System/.onboarding-complete").touch()
+    (context.vault_root / "System/user-profile.yaml").write_text(
+        "name: Legacy User\n"
+        "capabilities:\n"
+        "  career:\n"
+        "    enabled: false\n"
+        "  companies:\n"
+        "    enabled: false\n"
+        "  quarter_goals:\n"
+        "    enabled: false\n",
+        encoding="utf-8",
+    )
+    empty = context.vault_root / ".claude/skills/quarter-plan"
+    empty.mkdir(parents=True)
+    (empty / "references").mkdir()
+
+    result = doctor._probe_capability_rooms(context)
+
+    assert result.verdict == "OK"
+    assert "quarter-plan" not in result.detail
 
 
 def test_customization_skill_containers_are_not_validated_or_counted_as_skills(context):
@@ -4689,6 +4740,40 @@ def test_backup_freshness_broken_when_configured_but_never_ran(context):
     assert result.heal.tier == 3
 
 
+def test_backup_freshness_runs_in_the_ordinary_checkup(monkeypatch, context):
+    """A silent backup failure must not hide behind the extra live-service scan."""
+    _stub_probes(monkeypatch)
+    report = doctor.collect(context=context)
+    assert any(check["id"] == "backup.freshness" for check in report["checks"])
+    assert "backup.freshness" in {definition.id for definition in doctor.QUICK_CHECKS}
+    assert "backup.freshness" not in {definition.id for definition in doctor.DEEP_CHECKS}
+
+
+def test_vault_backup_freshness_uses_last_success_not_a_failed_run_timestamp(context):
+    """A job that fails every night still has a recent timestamp; that is not health."""
+    _write_plist(context, "com.dex.vault-backup")
+    promise = health_promises.promise_by_id("com.dex.vault-backup")
+    assert promise is not None
+    receipt = context.vault_root / promise.receipt_path
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    stale_success = NOW - timedelta(days=3)
+    receipt.write_text(
+        json.dumps({
+            "ok": False,
+            "timestamp": NOW.isoformat().replace("+00:00", "Z"),
+            "error": "one file blocked the archive",
+            "last_success": stale_success.isoformat().replace("+00:00", "Z"),
+        }),
+        encoding="utf-8",
+    )
+
+    result = doctor._probe_jobs_fresh(context)
+
+    assert result.verdict == "BROKEN"
+    assert "Vault backup" in result.detail
+    assert stale_success.date().isoformat() in result.detail
+
+
 def test_backup_freshness_unknown_when_stamp_is_unreadable(context):
     _write_backup_config(context)
     runtime = context.vault_root / "System" / ".dex"
@@ -5543,6 +5628,27 @@ def test_post_update_canary_probe_reads_the_receipt(context):
     ok = doctor._probe_post_update_canary(context)
     assert ok.verdict == "OK"
     assert "1.85.0" in ok.detail
+    assert "needs refreshing" not in ok.detail
+
+    receipt.write_text(
+        json.dumps(
+            {
+                "contract": "dex.health.post-update-canary/v1",
+                "checked_at": "2026-08-10T12:00:00+00:00",
+                "dex_version": "1.85.0",
+                "ok": True,
+                "error": None,
+                "proof_record_refresh_needed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    refresh = doctor._probe_post_update_canary(context)
+    assert refresh.verdict == "OK"
+    assert "needs refreshing" in refresh.detail
+    assert "python3 -m core.update.reanchor_cli" in refresh.detail
+    assert "couldn't be trusted" not in refresh.detail
+    assert "can't be trusted" not in refresh.detail
 
     receipt.write_text(
         json.dumps(

@@ -1281,6 +1281,7 @@ core/path_contract.py
 core/path_safety.py
 core/paths.py
 core/portable_contract.py
+core/project_related_tasks.py
 core/provision-contract.json
 core/provision.cjs
 core/provision_transaction.py
@@ -1353,6 +1354,7 @@ core/tests/fixtures/release-catalog-v1.96.2-historic-shape.json
 core/tests/fixtures/release-catalog-v1.96.2-installed-files.manifest
 core/tests/fixtures/release-catalog-v1.96.2-tag-split.json
 core/tests/fixtures/releases-feed.md
+core/tests/fixtures/session_boot_urgent_tasks.md
 core/tests/fixtures/sync-folder-vectors.json
 core/tests/fixtures/vault/00-Inbox/Daily_Plans/.gitkeep
 core/tests/fixtures/vault/00-Inbox/Ideas/.gitkeep
@@ -1443,6 +1445,7 @@ core/tests/test_conflict_resolution.py
 core/tests/test_contact_suggest.py
 core/tests/test_cooling.py
 core/tests/test_copilot_cli_host.py
+core/tests/test_correction_detect.py
 core/tests/test_create_person.py
 core/tests/test_credential_remediation.py
 core/tests/test_credential_scanner.py
@@ -1543,6 +1546,8 @@ core/tests/test_learning_automation.py
 core/tests/test_learning_capture_command_name.py
 core/tests/test_learning_review_prompt.py
 core/tests/test_learning_routing.py
+core/tests/test_learning_title.py
+core/tests/test_learning_title_backfill.py
 core/tests/test_lens_catalog_ci_trigger.py
 core/tests/test_lens_catalog_discovery.py
 core/tests/test_lens_catalog_enriched_discovery.py
@@ -1603,6 +1608,7 @@ core/tests/test_preflight_paths.py
 core/tests/test_process_meetings_capture_calendar_wiring.py
 core/tests/test_process_meetings_soft_commitment_wiring.py
 core/tests/test_product_agents_bootstrap.py
+core/tests/test_project_related_tasks.py
 core/tests/test_provision_js_yaml_missing.py
 core/tests/test_provision_parity.py
 core/tests/test_provision_python_selection.py
@@ -1630,6 +1636,7 @@ core/tests/test_release_tag_uniqueness.py
 core/tests/test_release_tree_matches_tag.py
 core/tests/test_release_workflows_draft_first.py
 core/tests/test_reminders_eventkit_script.py
+core/tests/test_reminders_host.py
 core/tests/test_reroute_people.py
 core/tests/test_reset_carry_forward.py
 core/tests/test_resume_export_safety.py
@@ -1640,6 +1647,7 @@ core/tests/test_ritual_match.py
 core/tests/test_ritual_timing.py
 core/tests/test_safe_autosave.py
 core/tests/test_security_gate.py
+core/tests/test_session_boot_urgent_tasks.py
 core/tests/test_session_health.py
 core/tests/test_session_lesson_extract.py
 core/tests/test_session_lesson_honesty.py
@@ -1677,6 +1685,7 @@ core/tests/test_update_checker_real_installs.py
 core/tests/test_update_journey_protocol.py
 core/tests/test_update_rollback_journey.py
 core/tests/test_usage_tracking.py
+core/tests/test_vault_folders.py
 core/tests/test_wave3_mature_skill_amendments.py
 core/tests/test_wave3_role_skill_contracts.py
 core/tests/test_week_review_clear_completed_tasks_instruction_contract.py
@@ -1698,6 +1707,7 @@ core/tests/test_work_server_task_goal_readers.py
 core/tests/test_work_server_task_priorities.py
 core/tests/test_work_server_weekly_planning_context.py
 core/tests/test_work_server_weekly_priority_creation.py
+core/tests/test_work_week_progress_status.py
 core/tests/test_working_week.py
 core/tests/vault_observed_writes.py
 core/transaction/__init__.py
@@ -1719,6 +1729,7 @@ core/utils/apple_mail_health.py
 core/utils/automation_ownership.py
 core/utils/claude_composition.py
 core/utils/company_domains.py
+core/utils/correction_detect.py
 core/utils/credential_migration_exceptions.json
 core/utils/credential_remediation.py
 core/utils/credential_scanner.py
@@ -1736,6 +1747,8 @@ core/utils/history_hygiene.py
 core/utils/integration_credentials.py
 core/utils/launch_agents.py
 core/utils/learning_routing.py
+core/utils/learning_title.py
+core/utils/learning_title_backfill.py
 core/utils/local_git.py
 core/utils/manifest.py
 core/utils/mcp_handshake.py
@@ -1751,6 +1764,7 @@ core/utils/reference_formatter.py
 core/utils/release_channel.py
 core/utils/release_feed.py
 core/utils/release_notes_sweep.py
+core/utils/reminders_host.py
 core/utils/ritual_timing.py
 core/utils/safe_autosave.py
 core/utils/session_health.py
@@ -1765,6 +1779,7 @@ core/utils/trust_registry.py
 core/utils/update_verifier.py
 core/utils/validators.py
 core/utils/working_week.py
+core/vault_folders.py
 core/vault_selection.py
 docs/Dex_System/Background_Processing_Guide.md
 docs/Dex_System/Calendar_Setup.md
@@ -1890,6 +1905,7 @@ packages/dex-agent-plugin/runtime/core/gates/__init__.py
 packages/dex-agent-plugin/runtime/core/gates/safety.py
 packages/dex-agent-plugin/runtime/core/path_safety.py
 packages/dex-agent-plugin/runtime/core/paths.py
+packages/dex-agent-plugin/runtime/core/vault_folders.py
 packages/dex-agent-plugin/runtime/core/vault_selection.py
 packages/dex-agent-plugin/server.py
 packages/dex-agent-plugin/skills/_available/capabilities/career/skills/career-coach/SKILL.md

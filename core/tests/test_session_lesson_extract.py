@@ -45,6 +45,11 @@ def test_classifies_corrections_and_preferences_and_ignores_ordinary_work() -> N
     assert extract.classify("stop") is None
     assert extract.classify("STOP") is None
     assert extract.classify("actually, let's use bullet points") is None
+    assert extract.classify("I don't have the latest numbers") is None
+    assert extract.classify("Is that not what we discussed?") is None
+    assert extract.classify("see below\n<pasted_content>That is not what I asked for</pasted_content>") is None
+    assert extract.classify("don't do that") == "Correction"
+    assert extract.classify("that's not what I asked") == "Correction"
 
 
 def test_skips_secret_looking_messages_entirely() -> None:
@@ -100,11 +105,32 @@ def test_appends_pending_entries_daily_review_already_parses(tmp_path: Path) -> 
     text = learning.read_text(encoding="utf-8")
     assert "**Status:** pending" in text
     assert "**What was said:**" in text
+    assert "**Kind:** Correction" in text
     assert "STOP over inferring from timesheet codes" in text
     entries = routing.parse_file(learning)
     assert len(entries) == 1
     assert entries[0].is_pending
-    assert entries[0].title == "Correction"
+    assert entries[0].kind == "Correction"
+    assert entries[0].title == "STOP over inferring from timesheet codes"
+    assert entries[0].title != "Correction"
+
+
+def test_preference_entries_are_named_from_what_was_said(tmp_path: Path) -> None:
+    learning = tmp_path / "2026-09-27.md"
+    learning.write_text("# Session Learnings - 2026-09-27\n\n---\n\n", encoding="utf-8")
+    transcript = _transcript(
+        tmp_path / "session.jsonl",
+        [_user_line("I prefer summaries in bullet points")],
+    )
+
+    extract.extract_and_append(transcript, learning, when=WHEN)
+
+    entries = routing.parse_file(learning)
+    assert len(entries) == 1
+    assert entries[0].title == "I prefer summaries in bullet points"
+    assert entries[0].title != "Preference"
+    assert entries[0].kind == "Preference"
+    assert "**Kind:** Preference" in learning.read_text(encoding="utf-8")
 
 
 def test_does_not_duplicate_a_live_correction_already_in_the_file(tmp_path: Path) -> None:
@@ -196,6 +222,7 @@ def test_real_correction_sent_with_harness_text_keeps_only_the_user_words(tmp_pa
         [
             _user_line("no, not that file\n<example-monitor-event>build is wrong</example-monitor-event>"),
             _user_line('see below\n<pasted_content id="p1">That is not what I asked for</pasted_content>'),
+            _user_line("no, that's not what I asked\n<pasted_content id=\"p2\">wrong title</pasted_content>"),
         ],
     )
 
@@ -203,7 +230,9 @@ def test_real_correction_sent_with_harness_text_keeps_only_the_user_words(tmp_pa
 
     assert [c.kind for c in candidates] == ["Correction", "Correction"]
     assert candidates[0].text == "no, not that file"
-    assert "pasted_content" in candidates[1].text
+    assert candidates[1].text == "no, that's not what I asked"
+    assert all("pasted_content" not in item.text for item in candidates)
+    assert all("wrong title" not in item.text for item in candidates)
 
 
 def test_record_session_end_keeps_existing_entries(tmp_path: Path) -> None:

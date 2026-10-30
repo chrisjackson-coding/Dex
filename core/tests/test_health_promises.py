@@ -89,6 +89,48 @@ def test_malformed_receipts_read_as_never_succeeded(tmp_path: Path) -> None:
         assert promises.audit_promise(tmp_path, promise, now=NOW).state == "never"
 
 
+def test_vault_backup_promise_uses_last_success_not_a_failed_timestamp(
+    tmp_path: Path,
+) -> None:
+    """Failed runs rewrite backup-last-run.json; only last_success proves a save."""
+    promise = promises.promise_by_id("com.dex.vault-backup")
+    assert promise is not None
+    assert promise.receipt_path == "System/.dex/backup-last-run.json"
+    assert promise.receipt_key == "last_success"
+    assert promise.cadence == timedelta(days=2)
+
+    receipt = tmp_path / promise.receipt_path
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(
+        json.dumps({
+            "ok": False,
+            "timestamp": NOW.isoformat(),
+            "error": "one file blocked the archive",
+            "last_success": (NOW - timedelta(days=3)).isoformat(),
+        }),
+        encoding="utf-8",
+    )
+
+    audit = promises.audit_promise(tmp_path, promise, now=NOW)
+    assert audit.state == "broken"
+    assert "Vault backup last completed successfully" in audit.detail()
+
+
+def test_vault_backup_promise_reads_a_legacy_ok_timestamp_as_success(
+    tmp_path: Path,
+) -> None:
+    """Records written before last_success existed must not false-alarm on update."""
+    promise = promises.promise_by_id("com.dex.vault-backup")
+    assert promise is not None
+    receipt = tmp_path / promise.receipt_path
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(
+        json.dumps({"ok": True, "timestamp": (NOW - timedelta(hours=1)).isoformat()}),
+        encoding="utf-8",
+    )
+    assert promises.audit_promise(tmp_path, promise, now=NOW).state == "kept"
+
+
 def test_smoke_receipt_is_the_success_only_log_not_the_ledger() -> None:
     """The ledger (System/.smoke-last-run.json) is rewritten even by failing
     runs, so it can never be the smoke job's success receipt."""
@@ -152,9 +194,11 @@ def test_post_update_canary_passes_and_writes_a_receipt(tmp_path: Path) -> None:
 
     assert receipt["ok"] is True
     assert receipt["error"] is None
+    assert receipt["proof_record_refresh_needed"] is False
     stored = json.loads((vault / RECEIPT_RELATIVE).read_text(encoding="utf-8"))
     assert stored["ok"] is True
     assert stored["contract"] == "dex.health.post-update-canary/v1"
+    assert stored["proof_record_refresh_needed"] is False
 
 
 def test_post_update_canary_still_passes_after_a_delivered_release(tmp_path: Path) -> None:
@@ -227,3 +271,82 @@ def test_canary_cli_reports_a_torn_install_plainly_without_a_traceback(tmp_path:
     assert "Traceback" not in completed.stdout + completed.stderr
     stored = json.loads((vault / RECEIPT_RELATIVE).read_text(encoding="utf-8"))
     assert stored["ok"] is False
+
+
+def _plant_previous_version_proof_record(vault: Path) -> bytes:
+    import hashlib
+
+    from core.lifecycle.catalog import load_catalog
+    from core.lifecycle.release_anchor import (
+        RELEASE_ANCHOR_PATH,
+        build_release_anchor_document,
+        canonical_anchor_bytes,
+    )
+    from core.tests.lifecycle_test_helpers import SOURCE_COMMIT, write_file
+
+    catalog = load_catalog(vault / "System/.release-catalog.json", release_root=vault)
+    manifest = (vault / "System/.installed-files.manifest").read_bytes()
+    named_version = "1.63.0" if catalog.release.version != "1.63.0" else "1.62.0"
+    raw = canonical_anchor_bytes(
+        build_release_anchor_document(
+            release_version=named_version,
+            tag=f"dist/release/v{named_version}-{SOURCE_COMMIT[:7]}",
+            tag_object="a" * 40,
+            commit=SOURCE_COMMIT,
+            tree="f" * 40,
+            manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+            catalog_sha256=catalog.integrity.catalog_sha256,
+            files={},
+        )
+    )
+    write_file(vault, RELEASE_ANCHOR_PATH, raw)
+    return raw
+
+
+def test_post_update_canary_says_a_previous_version_proof_record_needs_refreshing(
+    tmp_path: Path,
+) -> None:
+    from core.lifecycle.release_anchor import (
+        PROOF_RECORD_NEEDS_REFRESH,
+        PROOF_RECORD_REFRESH_COMMAND,
+        RELEASE_ANCHOR_PATH,
+    )
+
+    vault = _activation_fixture(tmp_path)
+    before = _plant_previous_version_proof_record(vault)
+
+    receipt = run_canary(vault)
+
+    assert receipt["ok"] is True
+    assert receipt["proof_record_refresh_needed"] is True
+    assert (vault / RELEASE_ANCHOR_PATH).read_bytes() == before
+
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "core" / "health" / "post_update.py"), "--vault", str(vault)],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "Post-update check passed" in completed.stdout
+    assert PROOF_RECORD_NEEDS_REFRESH in completed.stdout
+    assert PROOF_RECORD_REFRESH_COMMAND in completed.stdout
+    assert "couldn't be trusted" not in completed.stdout
+    assert "can't be trusted" not in completed.stdout
+    assert (vault / RELEASE_ANCHOR_PATH).read_bytes() == before
+
+
+def test_post_update_canary_does_not_call_a_malformed_record_a_refresh(
+    tmp_path: Path,
+) -> None:
+    from core.lifecycle.release_anchor import RELEASE_ANCHOR_PATH
+    from core.tests.lifecycle_test_helpers import write_file
+
+    vault = _activation_fixture(tmp_path)
+    write_file(vault, RELEASE_ANCHOR_PATH, b"{}\n")
+
+    receipt = run_canary(vault)
+
+    assert receipt["ok"] is True
+    assert receipt["proof_record_refresh_needed"] is False
